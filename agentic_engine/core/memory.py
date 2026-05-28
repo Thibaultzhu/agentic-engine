@@ -16,7 +16,6 @@ from pathlib import Path
 
 from ..config import get_settings
 
-
 _VALID = {"user", "feedback", "project", "reference"}
 
 
@@ -83,11 +82,23 @@ class Memory:
                     hits.append((scope, line.strip()))
         return hits
 
-    def bootstrap_block(self) -> str:
-        """Concatenate all scopes — inject as a system message at session start."""
+    def bootstrap_block(self, max_chars_per_scope: int = 2048) -> str:
+        """Concatenate all scopes — inject as a system message at session start.
+
+        Each scope is capped at ``max_chars_per_scope`` characters. When the
+        scope is too large we keep its last lines (most recent entries).
+        """
         out = []
         for scope in ("user", "project", "feedback", "reference"):
             txt = self.read(scope).strip()
-            if txt:
-                out.append(f"[{scope}]\n{txt}")
+            if not txt:
+                continue
+            if max_chars_per_scope and len(txt) > max_chars_per_scope:
+                # Keep recent tail; line-aligned to avoid mid-sentence cuts.
+                tail = txt[-max_chars_per_scope:]
+                # Drop a possibly-broken first line.
+                if "\n" in tail:
+                    tail = tail.split("\n", 1)[1]
+                txt = "[...older entries elided...]\n" + tail
+            out.append(f"[{scope}]\n{txt}")
         return "\n\n".join(out)

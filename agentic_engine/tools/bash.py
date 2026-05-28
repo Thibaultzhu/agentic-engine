@@ -6,7 +6,6 @@ import subprocess
 
 from ..core.tool import tool
 
-
 _DANGEROUS_TOKENS = {
     "mkfs", "mkfs.ext4", "mkfs.xfs", "mkfs.btrfs",
     "shutdown", "reboot", "halt", "poweroff",

@@ -11,13 +11,13 @@ import datetime as _dt
 import json
 import sqlite3
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from ..config import get_settings
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -154,6 +154,47 @@ class SessionStore:
     def rename(self, session_id: str, title: str) -> None:
         with self._cx() as cx:
             cx.execute("UPDATE sessions SET title=? WHERE id=?", (title, session_id))
+
+    def delete_session(self, session_id: str) -> int:
+        """Hard-delete a session and (via CASCADE) its messages.
+
+        Returns number of messages removed.
+        """
+        with self._cx() as cx:
+            row = cx.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            count = int(row["c"]) if row else 0
+            cur = cx.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            if cur.rowcount == 0:
+                raise KeyError(f"session {session_id} not found")
+        return count
+
+    def delete_project(self, project_id: str) -> tuple[int, int]:
+        """Hard-delete a project and all of its sessions+messages.
+
+        Returns (sessions_deleted, messages_deleted).
+        """
+        with self._cx() as cx:
+            sids = [r["id"] for r in cx.execute(
+                "SELECT id FROM sessions WHERE project_id=?", (project_id,)
+            ).fetchall()]
+            if not sids:
+                msg_count = 0
+            else:
+                placeholders = ",".join("?" * len(sids))
+                row = cx.execute(
+                    f"SELECT COUNT(*) AS c FROM messages WHERE session_id IN ({placeholders})",
+                    sids,
+                ).fetchone()
+                msg_count = int(row["c"]) if row else 0
+            # Delete sessions first (their messages cascade), then project.
+            cx.execute("DELETE FROM sessions WHERE project_id=?", (project_id,))
+            cur = cx.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            if cur.rowcount == 0:
+                raise KeyError(f"project {project_id} not found")
+        return len(sids), msg_count
 
     # ---------- messages ----------
     def append(self, session_id: str, role: str, content: str,

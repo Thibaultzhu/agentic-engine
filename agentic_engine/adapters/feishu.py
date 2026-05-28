@@ -6,7 +6,7 @@ or the official open-platform SDK. We only show the contract here.
 from __future__ import annotations
 
 import os
-from typing import Callable
+from collections.abc import Callable
 
 import httpx
 

@@ -9,9 +9,8 @@ from rich.table import Table
 
 from . import __version__
 from .config import get_settings
-from .core.skills import SkillRegistry
 from .core.memory import Memory
-
+from .core.skills import SkillRegistry
 
 app = typer.Typer(help="agentic-engine CLI")
 console = Console()
@@ -34,10 +33,14 @@ def chat(
     message: str = typer.Argument(..., help="user prompt"),
     model: str | None = typer.Option(None, "--model", "-m"),
     role: str = typer.Option("general-purpose", "--role"),
+    session: str | None = typer.Option(
+        None, "--session", help="Session id to persist this turn into. Omit to skip persistence."
+    ),
+    project: str = typer.Option("default", "--project", help="Project name (used when --session is given)."),
 ) -> None:
-    """One-shot single-agent chat."""
+    """One-shot single-agent chat. With --session, persist user+assistant turns to sqlite."""
     from .core.agent import Agent
-    from .tools import read_file, list_dir, grep_text, web_fetch
+    from .tools import grep_text, list_dir, read_file, web_fetch
 
     a = Agent(
         name="solo",
@@ -45,7 +48,26 @@ def chat(
         tools=[read_file, list_dir, grep_text, web_fetch],
         model=model,
     )
-    a.run(message)
+
+    sid = session
+    store = None
+    if sid:
+        from .core.sessions import SessionStore
+        store = SessionStore()
+        # Auto-create session if id is unknown.
+        all_sids = {s.id for s in store.list_sessions()}
+        all_sids |= {s.id for s in store.list_sessions(archived=True)}
+        if sid not in all_sids:
+            p = store.upsert_project(project, ".")
+            sess = store.new_session(p.id, title=message[:40] or "untitled")
+            sid = sess.id
+            console.print(f"[dim]created session {sid}[/]")
+        store.append(sid, "user", message)
+
+    res = a.run(message)
+    if store and sid:
+        store.append(sid, "assistant", res.output)
+        console.print(f"[dim]persisted to session {sid}[/]")
 
 
 @app.command("dev-team")
@@ -142,6 +164,30 @@ def sessions_show(sid: str) -> None:
         console.print(f"[bold cyan]{m.role}[/] {m.created_at}\n{m.content}\n")
 
 
+@sessions_app.command("rm")
+def sessions_rm(sid: str, force: bool = typer.Option(False, "--force", "-f")) -> None:
+    """Hard-delete a session (and its messages, cascade)."""
+    from .core.sessions import SessionStore
+    if not force:
+        ok = typer.confirm(f"Delete session {sid} and all its messages?")
+        if not ok:
+            raise typer.Abort()
+    n = SessionStore().delete_session(sid)
+    console.print(f"[green]deleted session {sid} ({n} messages)[/]")
+
+
+@sessions_app.command("rmproject")
+def sessions_rmproject(project_id: str, force: bool = typer.Option(False, "--force", "-f")) -> None:
+    """Hard-delete a project and ALL its sessions+messages."""
+    from .core.sessions import SessionStore
+    if not force:
+        ok = typer.confirm(f"Delete project {project_id} and ALL its sessions?")
+        if not ok:
+            raise typer.Abort()
+    s, m = SessionStore().delete_project(project_id)
+    console.print(f"[green]deleted project {project_id} ({s} sessions, {m} messages)[/]")
+
+
 # -------- cron --------
 cron_app = typer.Typer(help="Scheduled tasks (APScheduler)")
 app.add_typer(cron_app, name="cron")
@@ -179,6 +225,20 @@ def cron_rm(job_id: str) -> None:
     from .core.cron import CronManager
     ok = CronManager().remove(job_id)
     console.print("[green]removed[/]" if ok else "[red]not found[/]")
+
+
+@cron_app.command("enable")
+def cron_enable(job_id: str) -> None:
+    from .core.cron import CronManager
+    changed = CronManager().enable(job_id)
+    console.print("[green]enabled[/]" if changed else "[yellow]already enabled[/]")
+
+
+@cron_app.command("disable")
+def cron_disable(job_id: str) -> None:
+    from .core.cron import CronManager
+    changed = CronManager().disable(job_id)
+    console.print("[green]disabled[/]" if changed else "[yellow]already disabled[/]")
 
 
 # -------- usage --------

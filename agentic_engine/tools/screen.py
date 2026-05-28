@@ -8,7 +8,6 @@ Install:  pip install pyautogui mss pillow
 from __future__ import annotations
 
 import base64
-import io
 from pathlib import Path
 
 from ..core.tool import tool

@@ -7,16 +7,84 @@ Modes:
 """
 from __future__ import annotations
 
+import json
+import logging
+import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from rich.console import Console
 
 from .agent import Agent, AgentResult
 
-
 _console = Console()
+logger = logging.getLogger(__name__)
+
+
+_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Best-effort: extract a JSON object from arbitrary LLM output.
+
+    Tries, in order:
+        1. raw json.loads on the full text (it might already be JSON).
+        2. ```json ...``` fenced block.
+        3. Bracket-balanced scan that respects strings & escapes.
+    Returns None if nothing parseable is found.
+    """
+    if not text:
+        return None
+    text = text.strip()
+    try:
+        v = json.loads(text)
+        return v if isinstance(v, dict) else None
+    except Exception:
+        pass
+
+    m = _FENCE_RE.search(text)
+    if m:
+        try:
+            v = json.loads(m.group(1))
+            return v if isinstance(v, dict) else None
+        except Exception:
+            pass
+
+    # Stack-based extractor: find the first balanced {...} that parses.
+    n = len(text)
+    for start in range(n):
+        if text[start] != "{":
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, n):
+            c = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                continue
+            if c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        v = json.loads(candidate)
+                        if isinstance(v, dict):
+                            return v
+                    except Exception:
+                        break
+    return None
 
 
 @dataclass
@@ -24,7 +92,7 @@ class Orchestrator:
     agents: list[Agent] = field(default_factory=list)
     name: str = "orchestrator"
 
-    def add(self, agent: Agent) -> "Orchestrator":
+    def add(self, agent: Agent) -> Orchestrator:
         self.agents.append(agent)
         return self
 
@@ -55,10 +123,15 @@ class Orchestrator:
     def run_parallel(
         self,
         prompts: dict[str, str],
-        verbose: bool = True,
+        verbose: bool = False,
         max_workers: int = 8,
     ) -> dict[str, AgentResult]:
-        """prompts: {agent_name: prompt}. Agents must already be added."""
+        """prompts: {agent_name: prompt}. Agents must already be added.
+
+        Note: verbose defaults to False here because interleaved rich.Console
+        output from many threads is unreadable. Set verbose=True only when
+        you have one worker, or pipe each Agent through its own Console.
+        """
         out: dict[str, AgentResult] = {}
         if not prompts:
             return out
@@ -95,17 +168,19 @@ class Orchestrator:
 
         if not plan:
             planning = leader.run(
-                f"You are the team lead. Decompose this goal into subtasks for your team and "
-                f"output a JSON object {{member_name: subtask}} only.\n\nGoal: {goal}",
+                "You are the team lead. Decompose this goal into subtasks for your team and "
+                "output a JSON object {member_name: subtask} only. Do NOT wrap it in prose.\n\n"
+                f"Goal: {goal}",
                 verbose=verbose,
             )
-            import json
-            try:
-                plan = json.loads(planning.output[planning.output.find("{"): planning.output.rfind("}") + 1])
-            except Exception:
+            extracted = _extract_json_object(planning.output)
+            if extracted and all(isinstance(v, str) for v in extracted.values()):
+                plan = extracted
+            else:
+                logger.warning("[dispatch] could not parse plan, falling back to fan-out")
                 plan = {a.name: goal for a in self.agents if a.name != leader_name}
 
-        member_results = self.run_parallel(plan, verbose=verbose)
+        member_results = self.run_parallel(plan, verbose=False)
         summary_input = (
             f"Goal: {goal}\n\nTeam outputs:\n" +
             "\n\n".join(f"## {n}\n{r.output}" for n, r in member_results.items())

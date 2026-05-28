@@ -6,7 +6,7 @@ Use the official WeChat Work Open Platform SDK if you need bidirectional.
 from __future__ import annotations
 
 import os
-from typing import Callable
+from collections.abc import Callable
 
 import httpx
 

@@ -35,10 +35,10 @@ import os
 import secrets
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -48,7 +48,7 @@ from .core.cron import CronManager
 from .core.sessions import SessionStore
 from .core.usage import default_tracker
 from .teams import build_dev_team
-from .tools import read_file, list_dir, grep_text, web_fetch
+from .tools import grep_text, list_dir, read_file, web_fetch
 
 
 # ============= Token store (TTL + thread-safe) =============
@@ -81,6 +81,41 @@ _store = SessionStore()
 _cron = CronManager()
 
 
+# ============= Background job store =============
+class _JobStore:
+    def __init__(self) -> None:
+        self._d: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def create(self) -> str:
+        jid = secrets.token_urlsafe(8)
+        with self._lock:
+            self._d[jid] = {"id": jid, "status": "queued", "result": None, "error": None,
+                            "created_at": time.time()}
+        return jid
+
+    def set_done(self, jid: str, result: Any) -> None:
+        with self._lock:
+            if jid in self._d:
+                self._d[jid]["status"] = "done"
+                self._d[jid]["result"] = result
+                self._d[jid]["finished_at"] = time.time()
+
+    def set_error(self, jid: str, err: str) -> None:
+        with self._lock:
+            if jid in self._d:
+                self._d[jid]["status"] = "error"
+                self._d[jid]["error"] = err
+                self._d[jid]["finished_at"] = time.time()
+
+    def get(self, jid: str) -> dict | None:
+        with self._lock:
+            return dict(self._d.get(jid)) if jid in self._d else None
+
+
+_jobs = _JobStore()
+
+
 # ============= Lifespan: start/stop scheduler =============
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -91,10 +126,8 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
-        try:
+        with suppress(Exception):
             _cron.stop()
-        except Exception:
-            pass
 
 
 app = FastAPI(title="agentic-engine", version="0.2.0", lifespan=_lifespan)
@@ -195,10 +228,45 @@ def chat(req: ChatReq, _: str = Depends(require_auth)) -> dict:
 
 
 @app.post("/dev-team")
-def dev_team(req: DevTeamReq, _: str = Depends(require_auth)) -> dict:
-    team = build_dev_team(model=req.model)
-    results = team.run_sequential(req.goal, verbose=False)
-    return {"results": [{"agent": r.agent, "output": r.output, "turns": r.turns} for r in results]}
+def dev_team(
+    req: DevTeamReq,
+    background: BackgroundTasks,
+    async_: bool = False,
+    _: str = Depends(require_auth),
+) -> dict:
+    """Run the 5-role dev team.
+
+    Default is synchronous (blocks). Set ?async_=true to enqueue and get a job id;
+    poll GET /jobs/{job_id} for status/result. The synchronous mode is kept for
+    backwards compat but will block uvicorn for the duration of the run.
+    """
+    if not async_:
+        team = build_dev_team(model=req.model)
+        results = team.run_sequential(req.goal, verbose=False)
+        return {"results": [{"agent": r.agent, "output": r.output, "turns": r.turns} for r in results]}
+
+    job_id = _jobs.create()
+
+    def _run() -> None:
+        try:
+            team = build_dev_team(model=req.model)
+            results = team.run_sequential(req.goal, verbose=False)
+            _jobs.set_done(job_id, {"results": [
+                {"agent": r.agent, "output": r.output, "turns": r.turns} for r in results
+            ]})
+        except Exception as e:  # noqa: BLE001
+            _jobs.set_error(job_id, str(e))
+
+    background.add_task(_run)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str, _: str = Depends(require_auth)) -> dict:
+    j = _jobs.get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="job not found")
+    return j
 
 
 # ============= Usage =============
@@ -226,7 +294,7 @@ def session_append(sid: str, req: AppendReq, _: str = Depends(require_auth)) -> 
     try:
         m = _store.append(sid, req.role, req.content)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"message": m.__dict__}
 
 
@@ -247,7 +315,7 @@ def cron_add(req: CronAddReq, _: str = Depends(require_auth)) -> dict:
     try:
         job = _cron.add(req.name, req.schedule, req.payload)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"invalid job: {e}")
+        raise HTTPException(status_code=400, detail=f"invalid job: {e}") from e
     return {"job": job.__dict__}
 
 
@@ -255,6 +323,24 @@ def cron_add(req: CronAddReq, _: str = Depends(require_auth)) -> dict:
 def cron_remove(job_id: str, _: str = Depends(require_auth)) -> dict:
     ok = _cron.remove(job_id)
     return {"removed": ok}
+
+
+@app.post("/cron/{job_id}/enable")
+def cron_enable_ep(job_id: str, _: str = Depends(require_auth)) -> dict:
+    try:
+        changed = _cron.enable(job_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"changed": changed}
+
+
+@app.post("/cron/{job_id}/disable")
+def cron_disable_ep(job_id: str, _: str = Depends(require_auth)) -> dict:
+    try:
+        changed = _cron.disable(job_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"changed": changed}
 
 
 # ============= H5 =============

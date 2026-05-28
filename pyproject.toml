@@ -1,6 +1,6 @@
 [project]
 name = "agentic-engine"
-version = "0.2.0"
+version = "0.2.1"
 description = "An original multi-agent engineering framework inspired by industry patterns (CrewAI / AutoGen / LangGraph). Built on Bailian Qwen."
 authors = [{ name = "Thibaultzhu" }]
 readme = "README.md"
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "respx>=0.21"]
 cron = ["apscheduler>=3.10"]
 computer-use = ["pyautogui>=0.9.54", "mss>=9.0", "pillow>=10"]
 full = [
@@ -27,6 +27,7 @@ full = [
     "pyautogui>=0.9.54",
     "mss>=9.0",
     "pillow>=10",
+    "respx>=0.21",
 ]
 
 [project.scripts]
@@ -38,3 +39,28 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["agentic_engine*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = ["desktop/web", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM"]
+ignore = [
+    "E501",   # line too long — formatter handles it
+    "B008",   # FastAPI/Typer use `Depends(...)`/`Header(...)` as defaults
+    "N818",   # exception name doesn't end in Error (TelegramFatalError is fine)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "N", "SIM"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:starlette.testclient",
+    "ignore::DeprecationWarning:httpx",
+]

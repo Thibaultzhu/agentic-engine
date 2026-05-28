@@ -19,7 +19,7 @@ class Settings:
     home: Path = field(default_factory=lambda: Path.home() / ".agentic-engine")
 
     @classmethod
-    def load(cls, env_path: str | None = None) -> "Settings":
+    def load(cls, env_path: str | None = None) -> Settings:
         if env_path:
             load_dotenv(env_path)
         else:

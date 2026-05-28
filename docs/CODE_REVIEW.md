@@ -7,6 +7,11 @@ Scope: ~25 modules, ~1900 LoC.
 Verdict: **functionally green for single-user/local use**, with 3 real
 correctness bugs, 4 security gaps, and a healthy backlog of polish.
 
+> **Status update (round 2 — 2026-05-28):** every P1 and every P2 listed
+> below has been landed in commit `feat: round-2 hardening` against
+> v0.2.1. Test suite is now 41/41 green; ruff config in pyproject is
+> clean. See the table at the bottom for the per-item resolution map.
+
 Severity scale:
 - 🔴 **P0** — broken behaviour or auth gap. Fix now.
 - 🟠 **P1** — works but wrong under concurrency, threat models, or rough input.
@@ -205,3 +210,44 @@ client breaks. They must move together.
 8. Add CORS middleware to the server (`*` for now).
 
 These eight changes resolve every P0 and the most damaging P1s.
+
+---
+
+## Resolution map (round 2)
+
+| Item | Where | Status | Notes |
+|---|---|---|---|
+| P0-1 cron not started | `server.py` lifespan | ✅ done | `_cron.start()` / `_cron.stop()` |
+| P0-2 H5 token never checked | `server.py:require_auth` | ✅ done | full Depends gate |
+| P0-3 sqlite FK off | `core/sessions.py` | ✅ done | `PRAGMA foreign_keys=ON` + CASCADE |
+| P1-1 token store leak | `_TokenStore` | ✅ done | TTL + lock |
+| P1-2 usage write race | `core/usage.py` | ✅ done | `threading.Lock` |
+| P1-3 cron expr lazy validation | `core/cron.py` | ✅ done | `_build_trigger` in `add()` |
+| P1-4 MCP `_send` blocking | `core/mcp.py` | ✅ done | reader thread + `queue.get(timeout=…)` |
+| P1-5 worktree suffix collision | `core/worktree.py` | ✅ done | 6 → 8 hex |
+| P1-6 telegram no backoff/401 | `adapters/telegram.py` | ✅ done | exponential backoff + `TelegramFatalError` for 401/403/404 |
+| P1-7 dispatch JSON brace-slice | `core/orchestrator.py` | ✅ done | code-fence + balanced-brace extractor |
+| P1-8 bash blacklist substring | `tools/bash.py` | ✅ done | shlex argv check |
+| P2-1/2 Tool typing | `core/tool.py` | ✅ done | `Optional`, `list[T]`, `dict[K,V]`, `Annotated`, docstring |
+| P2-3 tool-result truncation | `core/agent.py` | ✅ done | `tool_result_max_chars` knob |
+| P2-4 transient retry | `core/agent.py` | ✅ done | exp-backoff + jitter, `transient_retries` |
+| P2-5 sliding window | `core/agent.py` | ✅ done | `history_window`, tool-pair safe |
+| P2-6 parallel quiet default | `core/orchestrator.py` | ✅ done | `verbose=False` |
+| P2-7 bootstrap cap | `core/memory.py` | ✅ done | `max_chars_per_scope` |
+| P2-8 hard delete | `core/sessions.py` | ✅ done | `delete_session` / `delete_project` |
+| P2-9 cron enable/disable | `core/cron.py` + CLI + server | ✅ done | runtime toggle |
+| P2-11 pricing.json | `core/usage.py` | ✅ done | `${AGENTIC_HOME}/pricing.json` |
+| P2-12 MCP schema sanitizer | `core/mcp.py` | ✅ done | strips `$schema`, `$comment`, `additionalProperties` |
+| P2-14 write_file safety | `tools/files.py` | ✅ done | `if_exists`, `backup`, append |
+| P2-15 grep default ignores | `tools/files.py` | ✅ done | `.git`/`node_modules`/`__pycache__`/etc. |
+| P2-16 git diff non-repo | `tools/diff.py` | ✅ done | clear "not a git repo" message |
+| P2-18 SSRF block | `tools/web.py` | ✅ done | DNS-resolved IP check + metadata host list |
+| P2-19 IM Sender/Receiver split | `adapters/base.py` | ✅ done | `IMSender`, `IMReceiver`, `IMAdapter` |
+| P2-20 llm bare except | `llm/__init__.py` | ✅ done | `logger.debug` + precedence doc |
+| P2-23 cli chat persist | `cli.py` | ✅ done | `--session/--project` |
+| P2-25 /dev-team async | `server.py` | ✅ done | `BackgroundTasks` + `/jobs/{id}` |
+| P2-26 respx OpenAI mock | `tests/test_round2.py` | ✅ done | one full happy-path |
+| P2-27 ruff/pytest config | `pyproject.toml` | ✅ done | + `0.2.1` bump |
+| P2-28 re-export ops | `agentic_engine/__init__.py` | ✅ done | SessionStore/CronManager/UsageTracker/MCPClient/worktree |
+
+Tests: **41 passed in 1.77s**. Ruff: **clean**.

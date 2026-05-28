@@ -22,8 +22,10 @@ class UsageRecord:
     cost_cny: float = 0.0
 
 
-# Rough CNY per 1M tokens (input, output). Update freely.
-_PRICE = {
+# Rough CNY per 1M tokens (input, output). Built-in defaults; override by
+# placing a JSON file at {AGENTIC_HOME}/pricing.json:
+#   {"qwen-plus": [0.8, 2.0], "my-fine-tuned": [10, 30]}
+_DEFAULT_PRICE: dict[str, tuple[float, float]] = {
     "qwen-turbo": (0.3, 0.6),
     "qwen-plus": (0.8, 2.0),
     "qwen-max": (20.0, 60.0),
@@ -32,8 +34,24 @@ _PRICE = {
 }
 
 
+def _load_pricing() -> dict[str, tuple[float, float]]:
+    table = dict(_DEFAULT_PRICE)
+    try:
+        s = get_settings()
+        p = s.home / "pricing.json"
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            for k, v in data.items():
+                if isinstance(v, (list, tuple)) and len(v) == 2:
+                    table[k] = (float(v[0]), float(v[1]))
+    except Exception:
+        pass
+    return table
+
+
 def estimate_cost(model: str, prompt: int, completion: int) -> float:
-    p_in, p_out = _PRICE.get(model, (0.0, 0.0))
+    table = _load_pricing()
+    p_in, p_out = table.get(model, (0.0, 0.0))
     return (prompt / 1_000_000) * p_in + (completion / 1_000_000) * p_out
 
 
@@ -57,9 +75,8 @@ class UsageTracker:
             cost_cny=round(estimate_cost(model, prompt, completion), 6),
         )
         line = json.dumps(asdict(rec), ensure_ascii=False) + "\n"
-        with _FILE_LOCK:
-            with self.path.open("a", encoding="utf-8") as f:
-                f.write(line)
+        with _FILE_LOCK, self.path.open("a", encoding="utf-8") as f:
+            f.write(line)
         return rec
 
     def all(self) -> list[UsageRecord]:

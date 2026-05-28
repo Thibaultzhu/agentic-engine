@@ -2,13 +2,24 @@
 
 Implements a tool-calling loop on top of the OpenAI-compatible Bailian API.
 Each Agent owns its own message history and can be run multiple turns.
+
+Robustness knobs:
+    tool_result_max_chars  : truncate giant tool outputs (default 8000).
+    history_window         : keep at most N most-recent non-system messages
+                             when sending the next request (default 40).
+                             system + the final user/tool block always kept.
+    transient_retries      : retry on 429 / 5xx / connection errors (default 3).
 """
 from __future__ import annotations
 
 import json
+import logging
+import random
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from rich.console import Console
 
@@ -18,8 +29,21 @@ from .memory import Memory
 from .permissions import PermissionMode
 from .tool import Tool
 
-
 _console = Console()
+logger = logging.getLogger(__name__)
+
+
+_TRANSIENT_HINTS = (
+    "rate limit", "rate_limit", "timeout", "timed out",
+    "connection", "temporarily unavailable", "overloaded",
+    "internal server error", "bad gateway", "service unavailable",
+    "gateway timeout", " 429", " 500", " 502", " 503", " 504",
+)
+
+
+def _is_transient(err: Exception) -> bool:
+    s = str(err).lower()
+    return any(h in s for h in _TRANSIENT_HINTS)
 
 
 @dataclass
@@ -43,7 +67,10 @@ class Agent:
     temperature: float = 0.6
     memory: Memory | None = None
     use_bootstrap_memory: bool = True
-    approval_hook: Callable[[str, dict[str, Any]], bool] | None = None  # name, args -> approve?
+    approval_hook: Callable[[str, dict[str, Any]], bool] | None = None
+    tool_result_max_chars: int = 8000
+    history_window: int = 40
+    transient_retries: int = 3
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     # ---------- tool helpers ----------
@@ -69,6 +96,44 @@ class Agent:
             return True
         return True
 
+    # ---------- llm call with retry ----------
+    def _chat_with_retry(self, messages: list[dict[str, Any]], **kw: Any) -> Any:
+        last_exc: Exception | None = None
+        for attempt in range(self.transient_retries + 1):
+            try:
+                return chat(messages=messages, agent_name=self.name, **kw)
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                if attempt >= self.transient_retries or not _is_transient(e):
+                    raise
+                delay = min(20.0, (2 ** attempt) * (0.5 + random.random()))
+                logger.warning("[agent %s] transient LLM error (attempt %d): %s — retry in %.1fs",
+                               self.name, attempt + 1, e, delay)
+                time.sleep(delay)
+        # Unreachable, but mypy-friendly.
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("unreachable")
+
+    # ---------- history compaction ----------
+    def _compact(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if self.history_window <= 0 or len(messages) <= self.history_window + 1:
+            return messages
+        # Always keep the system message at index 0.
+        head = messages[:1]
+        tail = messages[-self.history_window:]
+        # Don't break a tool_calls/tool pair across the boundary: if first kept
+        # message is a tool response, also keep the assistant tool_calls msg.
+        if tail and tail[0].get("role") == "tool":
+            # Walk back to last assistant with tool_calls
+            i = messages.index(tail[0])
+            while i > 0 and not (
+                messages[i].get("role") == "assistant" and messages[i].get("tool_calls")
+            ):
+                i -= 1
+            tail = messages[i:]
+        return head + tail
+
     # ---------- main loop ----------
     def run(self, user_input: str, verbose: bool = True) -> AgentResult:
         s = get_settings()
@@ -84,12 +149,11 @@ class Agent:
 
         tool_calls_total = 0
         for turn in range(self.max_turns):
-            resp = chat(
-                messages=messages,
+            resp = self._chat_with_retry(
+                self._compact(messages),
                 model=self.model or s.model_default,
                 tools=self._tool_schemas() if self.tools else None,
                 temperature=self.temperature,
-                agent_name=self.name,
             )
             msg = resp.choices[0].message
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
@@ -137,10 +201,16 @@ class Agent:
                         result = tool(**args)
                     except Exception as e:  # noqa: BLE001
                         result = f"[error] {type(e).__name__}: {e}"
+                content = str(result)
+                if len(content) > self.tool_result_max_chars:
+                    content = (
+                        content[: self.tool_result_max_chars]
+                        + f"\n[...truncated {len(content) - self.tool_result_max_chars} chars]"
+                    )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": str(result)[:8000],
+                    "content": content,
                 })
 
         return AgentResult(

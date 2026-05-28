@@ -8,11 +8,12 @@ Install:  pip install apscheduler
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import uuid
-from dataclasses import dataclass, asdict
-from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from typing import Any
 
 from ..config import get_settings
 
@@ -61,11 +62,34 @@ class CronManager:
         self.jobs = [j for j in self.jobs if j.id != job_id]
         self._save()
         if self._scheduler:
-            try:
+            with contextlib.suppress(Exception):
                 self._scheduler.remove_job(job_id)
-            except Exception:
-                pass
         return len(self.jobs) < before
+
+    def enable(self, job_id: str) -> bool:
+        for j in self.jobs:
+            if j.id == job_id:
+                if j.enabled:
+                    return False
+                j.enabled = True
+                self._save()
+                if self._scheduler:
+                    self._add_to_scheduler(j)
+                return True
+        raise KeyError(f"cron job {job_id} not found")
+
+    def disable(self, job_id: str) -> bool:
+        for j in self.jobs:
+            if j.id == job_id:
+                if not j.enabled:
+                    return False
+                j.enabled = False
+                self._save()
+                if self._scheduler:
+                    with contextlib.suppress(Exception):
+                        self._scheduler.remove_job(job_id)
+                return True
+        raise KeyError(f"cron job {job_id} not found")
 
     def list(self) -> list[CronJob]:
         return list(self.jobs)
@@ -91,8 +115,8 @@ class CronManager:
     @staticmethod
     def _build_trigger(schedule: dict[str, Any]):
         from apscheduler.triggers.cron import CronTrigger
-        from apscheduler.triggers.interval import IntervalTrigger
         from apscheduler.triggers.date import DateTrigger
+        from apscheduler.triggers.interval import IntervalTrigger
 
         kind = schedule.get("kind")
         if kind == "cron":
@@ -107,8 +131,8 @@ class CronManager:
     @staticmethod
     def _default_runner(payload: dict[str, Any]) -> Any:
         if payload.get("type") == "agent_turn":
+            from ..tools import grep_text, list_dir, read_file, web_fetch
             from .agent import Agent
-            from ..tools import read_file, list_dir, grep_text, web_fetch
             a = Agent(
                 name=payload.get("agent_name", "cron"),
                 tools=[read_file, list_dir, grep_text, web_fetch],

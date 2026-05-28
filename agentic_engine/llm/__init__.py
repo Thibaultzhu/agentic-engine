@@ -2,16 +2,21 @@
 
 Also home of the multi-provider abstraction. Supported providers (via
 OpenAI-compatible endpoints):
-    - bailian (default, Qwen)
+    - bailian-cn / bailian-sg (default, Qwen)
     - deepseek
     - openai
     - ollama (local)
-    - anthropic-compat (any 3rd-party gateway exposing OpenAI shape)
+
+Provider selection precedence (chat()):
+    1. explicit ``provider`` argument
+    2. ``model``-prefix routing (e.g. "deepseek/...", "openai/gpt-4o")
+    3. settings (``Settings.load()`` from .env / env vars)
 
 Usage tracking is recorded into UsageTracker on every successful call.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +24,8 @@ from typing import Any
 from openai import OpenAI
 
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -122,6 +129,6 @@ def chat(
                     prompt=getattr(usage, "prompt_tokens", 0) or 0,
                     completion=getattr(usage, "completion_tokens", 0) or 0,
                 )
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("usage tracking failed: %s", e)
     return resp

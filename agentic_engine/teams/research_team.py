@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ..core.agent import Agent
 from ..core.orchestrator import Orchestrator
-from ..tools import web_fetch, read_file, write_file, grep_text
+from ..tools import grep_text, read_file, web_fetch, write_file
 
 
 def build_research_team(model: str | None = None) -> Orchestrator:

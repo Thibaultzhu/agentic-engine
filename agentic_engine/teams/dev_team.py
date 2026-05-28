@@ -7,7 +7,7 @@ from __future__ import annotations
 from ..core.agent import Agent
 from ..core.orchestrator import Orchestrator
 from ..core.permissions import PermissionMode
-from ..tools import bash_run, read_file, write_file, list_dir, grep_text
+from ..tools import bash_run, grep_text, list_dir, read_file, write_file
 
 
 def build_dev_team(workdir: str = ".", model: str | None = None) -> Orchestrator:
