@@ -47,6 +47,8 @@ class CronManager:
 
     # ---------- CRUD ----------
     def add(self, name: str, schedule: dict[str, Any], payload: dict[str, Any]) -> CronJob:
+        # Validate schedule eagerly so bad input doesn't poison cron.json.
+        self._build_trigger(schedule)
         job = CronJob(id=uuid.uuid4().hex[:8], name=name, schedule=schedule, payload=payload)
         self.jobs.append(job)
         self._save()
@@ -83,21 +85,23 @@ class CronManager:
             self._scheduler = None
 
     def _add_to_scheduler(self, job: CronJob) -> None:
+        trig = self._build_trigger(job.schedule)
+        self._scheduler.add_job(self.runner, trigger=trig, args=[job.payload], id=job.id, replace_existing=True)
+
+    @staticmethod
+    def _build_trigger(schedule: dict[str, Any]):
         from apscheduler.triggers.cron import CronTrigger
         from apscheduler.triggers.interval import IntervalTrigger
         from apscheduler.triggers.date import DateTrigger
 
-        kind = job.schedule.get("kind")
+        kind = schedule.get("kind")
         if kind == "cron":
-            trig = CronTrigger.from_crontab(job.schedule["expr"])
-        elif kind == "interval":
-            trig = IntervalTrigger(seconds=int(job.schedule["seconds"]))
-        elif kind == "date":
-            trig = DateTrigger(run_date=job.schedule["run_at"])
-        else:
-            raise ValueError(f"unknown schedule kind: {kind}")
-
-        self._scheduler.add_job(self.runner, trigger=trig, args=[job.payload], id=job.id, replace_existing=True)
+            return CronTrigger.from_crontab(schedule["expr"])
+        if kind == "interval":
+            return IntervalTrigger(seconds=int(schedule["seconds"]))
+        if kind == "date":
+            return DateTrigger(run_date=schedule["run_at"])
+        raise ValueError(f"unknown schedule kind: {kind}")
 
     # ---------- default runner ----------
     @staticmethod

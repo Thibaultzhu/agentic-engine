@@ -44,7 +44,7 @@ def add_worktree(
     repo = Path(repo).resolve()
     if not (repo / ".git").exists() and not (repo / "HEAD").exists():
         raise ValueError(f"{repo} is not a git repository")
-    branch = branch or f"agent/wt-{uuid.uuid4().hex[:6]}"
+    branch = branch or f"agent/wt-{uuid.uuid4().hex[:8]}"
     parent = Path(parent_dir or repo.parent / ".agentic-worktrees").resolve()
     parent.mkdir(parents=True, exist_ok=True)
     wt_path = parent / branch.replace("/", "_")

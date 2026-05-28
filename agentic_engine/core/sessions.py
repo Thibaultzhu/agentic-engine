@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     tool_calls_json TEXT,
     created_at TEXT NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES sessions(id)
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
 """
@@ -88,9 +88,13 @@ class SessionStore:
     def _cx(self) -> Iterator[sqlite3.Connection]:
         cx = sqlite3.connect(self.db_path)
         cx.row_factory = sqlite3.Row
+        cx.execute("PRAGMA foreign_keys = ON")
         try:
             yield cx
             cx.commit()
+        except Exception:
+            cx.rollback()
+            raise
         finally:
             cx.close()
 

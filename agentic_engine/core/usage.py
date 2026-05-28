@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,9 @@ def estimate_cost(model: str, prompt: int, completion: int) -> float:
     return (prompt / 1_000_000) * p_in + (completion / 1_000_000) * p_out
 
 
+_FILE_LOCK = threading.Lock()
+
+
 class UsageTracker:
     def __init__(self, path: Path | None = None):
         s = get_settings()
@@ -52,8 +56,10 @@ class UsageTracker:
             total_tokens=prompt + completion,
             cost_cny=round(estimate_cost(model, prompt, completion), 6),
         )
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(rec), ensure_ascii=False) + "\n")
+        line = json.dumps(asdict(rec), ensure_ascii=False) + "\n"
+        with _FILE_LOCK:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(line)
         return rec
 
     def all(self) -> list[UsageRecord]:

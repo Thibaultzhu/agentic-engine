@@ -67,11 +67,16 @@
 const API = location.origin || "http://localhost:9120";
 let currentSession = null;
 
+// Auth: ?admin_key=... or ?token=... in URL, or stored in window for the session
+const urlp = new URLSearchParams(location.search);
+const ADMIN_KEY = urlp.get("admin_key") || "";
+const H5_TOKEN  = urlp.get("token") || "";
+
 async function api(path, opts={}) {
-  const r = await fetch(API + path, {
-    headers: {"Content-Type": "application/json", ...(opts.headers||{})},
-    ...opts,
-  });
+  const headers = {"Content-Type": "application/json", ...(opts.headers||{})};
+  if (ADMIN_KEY) headers["X-Admin-Key"] = ADMIN_KEY;
+  if (H5_TOKEN)  headers["X-H5-Token"]  = H5_TOKEN;
+  const r = await fetch(API + path, { headers, ...opts });
   return r.json();
 }
 
