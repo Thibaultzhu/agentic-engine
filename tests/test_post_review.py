@@ -1,5 +1,4 @@
 """Regression tests for the post-review fixes."""
-import os
 import time
 
 import pytest
@@ -34,8 +33,8 @@ def test_bash_allows_safe_commands(tmp_path):
 # ---------- sqlite FK ----------
 def test_sessions_foreign_key_enforced(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     from agentic_engine.core.sessions import SessionStore
@@ -47,8 +46,8 @@ def test_sessions_foreign_key_enforced(tmp_path, monkeypatch):
 # ---------- cron eager validation ----------
 def test_cron_rejects_bad_expression(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     from agentic_engine.core.cron import CronManager
@@ -62,12 +61,13 @@ def test_cron_rejects_bad_expression(tmp_path, monkeypatch):
 # ---------- usage tracker concurrency ----------
 def test_usage_tracker_thread_safe(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
-    from agentic_engine.core.usage import UsageTracker
     import threading
+
+    from agentic_engine.core.usage import UsageTracker
 
     t = UsageTracker(path=tmp_path / "u.jsonl")
 
@@ -93,12 +93,13 @@ def test_usage_tracker_thread_safe(tmp_path, monkeypatch):
 def test_server_auth_open_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
     monkeypatch.delenv("AGENTIC_ADMIN_KEY", raising=False)
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     # Re-import server fresh so its module-level state picks up env changes.
     import importlib
+
     import agentic_engine.server as srv
     importlib.reload(srv)
 
@@ -112,11 +113,12 @@ def test_server_auth_open_mode(tmp_path, monkeypatch):
 def test_server_auth_required_when_admin_key_set(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
     monkeypatch.setenv("AGENTIC_ADMIN_KEY", "supersecret")
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     import importlib
+
     import agentic_engine.server as srv
     importlib.reload(srv)
 

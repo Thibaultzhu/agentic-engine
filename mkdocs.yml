@@ -1,0 +1,85 @@
+site_name: Agentic Engine
+site_description: Original multi-agent framework on Bailian / Qwen.
+site_url: https://thibaultzhu.github.io/agentic-engine/
+repo_url: https://github.com/Thibaultzhu/agentic-engine
+repo_name: Thibaultzhu/agentic-engine
+copyright: MIT
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.tabs
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - tables
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true
+            members_order: source
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Concepts:
+      - Agent loop: concepts/agent.md
+      - Tools: concepts/tools.md
+      - Permissions: concepts/permissions.md
+      - Memory & RAG: concepts/memory.md
+      - Sessions & Cron: concepts/sessions-cron.md
+      - MCP bridge: concepts/mcp.md
+  - Server:
+      - HTTP API: server/http.md
+      - SSE & WebSocket: server/streaming.md
+      - JWT auth: server/auth.md
+      - Rate limit: server/ratelimit.md
+  - Operations:
+      - Logging & Telemetry: ops/observability.md
+      - Pricing & FX: ops/pricing.md
+      - Postgres adapter: ops/postgres.md
+      - Plugins: ops/plugins.md
+      - Eval harness: ops/evals.md
+      - Desktop shell: ops/desktop.md
+  - Reference:
+      - API: reference/api.md
+      - Changelog: changelog.md

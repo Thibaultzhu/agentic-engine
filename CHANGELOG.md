@@ -4,6 +4,55 @@ All notable changes to **agentic-engine** are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-28
+
+A comprehensive feature push covering the 27-item optimisation backlog.
+
+### Added
+- **Async-first agent surface**: `Agent.run_async()`, `run_stream()`,
+  `run_stream_async()` + LLM helper `chat_stream()`.
+- **Server streaming**: SSE `/chat/stream`, WebSocket `/ws/chat` endpoints.
+- **JWT authentication**: HS256 issuance (`/auth/token`) + bearer auth via
+  `python-jose` fallback. `require_role()` dependency factory.
+- **RAGMemory**: chromadb auto-detect + `_BM25Lite` pure-Python fallback.
+- **Permission policy engine**: `Rule` / `PermissionPolicy` with glob matching,
+  JSON persistence, session-level `.remember()`.
+- **Bash sandbox hardening**: cwd allowlist (env `AGENTIC_BASH_CWD_ALLOW`),
+  POSIX rlimits (`RLIMIT_AS`, `RLIMIT_CPU`), bwrap and sandbox-exec wrappers.
+- **Cron retry + dead-letter**: `max_retries`, `retry_backoff_s`, DLQ at
+  `cron.dlq.jsonl`, run history via `.runs(job_id)`.
+- **MCP HTTP/SSE transport**: `MCPHTTPClient` — JSON-RPC over HTTP with
+  streamable-HTTP support.
+- **PostgresSessionStore**: drop-in replacement for the SQLite store (lazy
+  `psycopg` v3 import).
+- **SQLite safety**: WAL mode + `busy_timeout=30s` + `BEGIN IMMEDIATE` for
+  multi-process safety.
+- **Multi-region pricing**: `cn`/`sg`/`us` rate tables + FX conversion via USD
+  bridge.
+- **Plugin system**: Python entry-points loader (`agentic_engine.tools` group).
+- **Eval harness**: `Task`, `EvalReport`, `run_eval()` with regex/contains/llm
+  judgement modes + `evals/golden/basic.json`.
+- **Rate limit**: `slowapi` wrapper with `AGENTIC_RATELIMIT_DISABLE` bypass.
+- **OpenTelemetry**: `setup_tracing()`, `span()` context manager (no-op without
+  SDK).
+- **Structured logging**: structlog with stdlib `_StdLibAdapter` fallback +
+  `.bind()` API.
+- **CI matrix**: GitHub Actions pytest 3.10–3.12 + ruff + mypy + pip-audit +
+  bandit. OIDC PyPI release workflow.
+- **PEP 561**: `py.typed` marker, MIT `LICENSE`.
+- **Tauri desktop config**: `desktop/tauri.conf.json` + docs/README.
+- **Security audit script**: `scripts/audit.sh` (bandit + pip-audit + ruff).
+- **Mkdocs site**: `mkdocs.yml` (material theme) + full `docs/` tree (concepts,
+  server, ops, reference).
+- **`__all__`**: `agentic_engine/__init__.py` re-exports all public API symbols.
+- 15 new test cases in `tests/test_v03.py` → total suite 56 tests.
+
+### Changed
+- `__version__` bumped to `0.3.0`.
+- `pyproject.toml`: classifiers, keywords, URLs, `[project.entry-points]`,
+  optional extras `[auth,log,otel,rag,ratelimit,docs,postgres]`, mypy + bandit
+  tool config.
+
 ## [0.2.1] — 2026-05-28
 
 Round-2 hardening sweep: every remaining P1 (3) and every P2 (30) from

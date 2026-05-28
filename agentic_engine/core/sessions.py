@@ -7,6 +7,7 @@ Schema:
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import json
 import sqlite3
@@ -86,14 +87,21 @@ class SessionStore:
 
     @contextmanager
     def _cx(self) -> Iterator[sqlite3.Connection]:
-        cx = sqlite3.connect(self.db_path)
+        cx = sqlite3.connect(self.db_path, timeout=30.0, isolation_level=None)
         cx.row_factory = sqlite3.Row
         cx.execute("PRAGMA foreign_keys = ON")
+        cx.execute("PRAGMA journal_mode = WAL")
+        cx.execute("PRAGMA synchronous = NORMAL")
+        cx.execute("PRAGMA busy_timeout = 30000")
         try:
+            cx.execute("BEGIN IMMEDIATE")
             yield cx
-            cx.commit()
+            with contextlib.suppress(sqlite3.OperationalError):
+                # executescript() auto-commits; tolerate "no transaction is active"
+                cx.execute("COMMIT")
         except Exception:
-            cx.rollback()
+            with contextlib.suppress(sqlite3.Error):
+                cx.execute("ROLLBACK")
             raise
         finally:
             cx.close()

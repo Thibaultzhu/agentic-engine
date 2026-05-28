@@ -38,16 +38,28 @@ import time
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+from . import ratelimit
 from .core.agent import Agent
+from .core.auth import Role, User, user_from_token
 from .core.cron import CronManager
 from .core.sessions import SessionStore
 from .core.usage import default_tracker
+from .logging import configure as configure_logging
 from .teams import build_dev_team
+from .telemetry import setup_tracing, span
 from .tools import grep_text, list_dir, read_file, web_fetch
 
 
@@ -119,6 +131,8 @@ _jobs = _JobStore()
 # ============= Lifespan: start/stop scheduler =============
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    configure_logging()
+    setup_tracing("agentic-engine")
     try:
         _cron.start()
     except Exception as e:  # apscheduler not installed → continue without cron
@@ -130,7 +144,8 @@ async def _lifespan(app: FastAPI):
             _cron.stop()
 
 
-app = FastAPI(title="agentic-engine", version="0.2.0", lifespan=_lifespan)
+app = FastAPI(title="agentic-engine", version="0.3.0", lifespan=_lifespan)
+ratelimit.apply(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -144,21 +159,49 @@ app.add_middleware(
 def require_auth(
     x_admin_key: str | None = Header(default=None),
     x_h5_token: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
 ) -> str:
-    """Return 'admin' or 'h5' on success; 401 on failure.
+    """Return 'admin' / 'h5' / 'jwt:<sub>:<role>' / 'open' on success.
 
-    Open-mode (no AGENTIC_ADMIN_KEY env) returns 'open' for everyone — useful
-    for local dev. As soon as you set AGENTIC_ADMIN_KEY, all gated routes
-    require a header.
+    Open-mode (no AGENTIC_ADMIN_KEY env, no AGENTIC_JWT_SECRET) returns
+    ``'open'``. As soon as either is set, gated routes require:
+        * ``X-Admin-Key`` header (long-lived, full access)
+        * ``X-H5-Token`` header (short-lived, full access)
+        * ``Authorization: Bearer <jwt>`` (when AGENTIC_JWT_SECRET set)
     """
     expected = os.getenv("AGENTIC_ADMIN_KEY", "")
-    if not expected:
+    jwt_secret = os.getenv("AGENTIC_JWT_SECRET", "")
+    if not expected and not jwt_secret:
         return "open"
-    if x_admin_key and secrets.compare_digest(x_admin_key, expected):
+    if expected and x_admin_key and secrets.compare_digest(x_admin_key, expected):
         return "admin"
     if x_h5_token and _tokens.check(x_h5_token):
         return "h5"
+    if jwt_secret and authorization and authorization.lower().startswith("bearer "):
+        try:
+            u = user_from_token(authorization.split(None, 1)[1].strip())
+            return f"jwt:{u.id}:{u.role.value}"
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=401, detail=f"jwt: {e}") from e
     raise HTTPException(status_code=401, detail="auth required")
+
+
+def require_role(min_role: Role) -> Any:
+    """Dependency factory that requires at least ``min_role`` from JWT.
+
+    Falls through to allow ``admin``/``open``/``h5`` (treated as admin-equiv)
+    so the existing v0.2 callers keep working.
+    """
+    def _dep(_: str = Depends(require_auth),
+             authorization: str | None = Header(default=None)) -> User:
+        if not (authorization and authorization.lower().startswith("bearer ")):
+            return User(id="admin", role=Role.ADMIN)
+        u = user_from_token(authorization.split(None, 1)[1].strip())
+        if not u.has(min_role):
+            raise HTTPException(status_code=403, detail=f"role {u.role} < {min_role}")
+        return u
+
+    return _dep
 
 
 def require_admin(x_admin_key: str | None = Header(default=None)) -> str:
@@ -203,20 +246,21 @@ class CronAddReq(BaseModel):
 # ============= Health (open) =============
 @app.get("/health")
 def health() -> dict:
-    auth_required = bool(os.getenv("AGENTIC_ADMIN_KEY", ""))
-    return {"ok": True, "version": "0.2.0", "auth_required": auth_required}
+    auth_required = bool(os.getenv("AGENTIC_ADMIN_KEY", "")) or bool(os.getenv("AGENTIC_JWT_SECRET", ""))
+    return {"ok": True, "version": "0.3.0", "auth_required": auth_required}
 
 
 # ============= Chat / dev-team =============
 @app.post("/chat")
 def chat(req: ChatReq, _: str = Depends(require_auth)) -> dict:
-    a = Agent(
-        name="api-solo",
-        role=req.role,
-        tools=[read_file, list_dir, grep_text, web_fetch],
-        model=req.model,
-    )
-    res = a.run(req.message, verbose=False)
+    with span("chat", role=req.role, model=req.model or ""):
+        a = Agent(
+            name="api-solo",
+            role=req.role,
+            tools=[read_file, list_dir, grep_text, web_fetch],
+            model=req.model,
+        )
+        res = a.run(req.message, verbose=False)
     if req.session_id:
         try:
             _store.append(req.session_id, "user", req.message)
@@ -225,6 +269,80 @@ def chat(req: ChatReq, _: str = Depends(require_auth)) -> dict:
             return {"output": res.output, "turns": res.turns, "tool_calls": res.tool_calls,
                     "warning": f"session persist failed: {e}"}
     return {"output": res.output, "turns": res.turns, "tool_calls": res.tool_calls}
+
+
+# ============= SSE streaming =============
+@app.post("/chat/stream")
+def chat_stream_endpoint(req: ChatReq, _: str = Depends(require_auth)) -> StreamingResponse:
+    """Server-Sent-Events streaming. Returns ``text/event-stream`` of deltas.
+
+    Each event has the line ``data: <chunk>`` (newlines escaped). The stream
+    terminates with ``data: [DONE]``.
+    """
+    a = Agent(
+        name="api-stream",
+        role=req.role,
+        tools=[],
+        model=req.model,
+    )
+
+    def _gen() -> Any:
+        try:
+            for piece in a.run_stream(req.message):
+                # SSE: each line has to be `data: <json>` with terminating blank line.
+                yield f"data: {piece.replace(chr(10), chr(92) + 'n')}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:  # noqa: BLE001
+            yield f"data: [ERROR] {type(e).__name__}: {e}\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+# ============= WebSocket streaming =============
+@app.websocket("/ws/chat")
+async def ws_chat(ws: WebSocket) -> None:
+    """Bidirectional chat over WebSocket — newline-delimited JSON frames.
+
+    Auth: pass ``?token=<jwt>`` or ``?admin_key=<key>`` query params (browsers
+    don't let you set arbitrary headers on WebSocket handshake).
+    """
+    await ws.accept()
+    expected = os.getenv("AGENTIC_ADMIN_KEY", "")
+    jwt_secret = os.getenv("AGENTIC_JWT_SECRET", "")
+    qs_token = ws.query_params.get("token", "")
+    qs_admin = ws.query_params.get("admin_key", "")
+    authed = (
+        (not expected and not jwt_secret)  # open-mode
+        or (expected and qs_admin and secrets.compare_digest(qs_admin, expected))
+        or (jwt_secret and qs_token and _check_jwt_silent(qs_token))
+    )
+    if not authed:
+        await ws.close(code=4401)
+        return
+    try:
+        while True:
+            data = await ws.receive_json()
+            msg = data.get("message", "")
+            if not isinstance(msg, str) or not msg.strip():
+                await ws.send_json({"type": "error", "error": "empty message"})
+                continue
+            a = Agent(name="ws", role="general-purpose", tools=[], model=data.get("model"))
+            try:
+                async for piece in a.run_stream_async(msg):
+                    await ws.send_json({"type": "delta", "content": piece})
+                await ws.send_json({"type": "done"})
+            except Exception as e:  # noqa: BLE001
+                await ws.send_json({"type": "error", "error": str(e)})
+    except WebSocketDisconnect:
+        return
+
+
+def _check_jwt_silent(token: str) -> bool:
+    try:
+        user_from_token(token)
+        return True
+    except Exception:
+        return False
 
 
 @app.post("/dev-team")
@@ -325,6 +443,11 @@ def cron_remove(job_id: str, _: str = Depends(require_auth)) -> dict:
     return {"removed": ok}
 
 
+@app.get("/cron/{job_id}/runs")
+def cron_runs(job_id: str, _: str = Depends(require_auth)) -> dict:
+    return {"runs": [r.__dict__ for r in _cron.runs(job_id)]}
+
+
 @app.post("/cron/{job_id}/enable")
 def cron_enable_ep(job_id: str, _: str = Depends(require_auth)) -> dict:
     try:
@@ -388,3 +511,54 @@ f.onsubmit = async (e) => {{
 }};
 </script></body></html>
 """)
+
+
+# ============= JWT auth =============
+class TokenIssueReq(BaseModel):
+    sub: str
+    role: str = "user"
+    expires_in: int = 3600
+
+
+@app.post("/auth/token")
+def issue_jwt(req: TokenIssueReq, _: str = Depends(require_admin)) -> dict:
+    """Issue an HS256 JWT (requires admin key + AGENTIC_JWT_SECRET)."""
+    from .core.auth import make_jwt
+
+    try:
+        Role(req.role)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"unknown role: {req.role}") from e
+    token = make_jwt({"sub": req.sub, "role": req.role}, expires_in=req.expires_in)
+    return {"token": token, "expires_in": req.expires_in}
+
+
+@app.get("/me")
+def me(authorization: str | None = Header(default=None)) -> dict:
+    """Inspect current bearer token (no admin/h5 fallback)."""
+    if not (authorization and authorization.lower().startswith("bearer ")):
+        raise HTTPException(status_code=401, detail="bearer token required")
+    try:
+        u = user_from_token(authorization.split(None, 1)[1].strip())
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=401, detail=str(e)) from e
+    return {"id": u.id, "role": u.role.value, "extra": u.extra or {}}
+
+
+# ============= Eval =============
+class EvalReq(BaseModel):
+    tasks: list[dict[str, Any]]
+
+
+@app.post("/eval")
+def run_eval_endpoint(req: EvalReq, _: str = Depends(require_auth)) -> dict:
+    from .evals import Task, run_eval
+
+    tasks = [Task.from_dict(d) for d in req.tasks]
+
+    def runner(prompt: str) -> str:
+        a = Agent(name="eval", role="evaluator", tools=[], model=None)
+        return a.run(prompt, verbose=False).output
+
+    report = run_eval(tasks, runner=runner)
+    return report.to_dict()

@@ -1,45 +1,52 @@
-# desktop/
+# Desktop shell (Tauri 2.x)
 
-A minimal cross-platform UI shell for `agentic-engine`.
+A thin, optional native wrapper that hosts the FastAPI server's
+`/h5/page` route inside a system webview. The Python process is
+launched as a sidecar at startup; the window navigates to
+`http://127.0.0.1:8765/h5/page` once the server is listening.
 
-The Python backend (`agentic_engine.server:app`) exposes everything we need
-over HTTP. The desktop UI is therefore a thin client.
-
-## Modes
-
-### 1. Web (zero-install, recommended for now)
+## Prerequisites
 
 ```bash
-# terminal A — start the API
-agentic serve --port 9120
+# Rust + Cargo
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# terminal B — open the static client
-open desktop/web/index.html
-# or serve it:  python -m http.server 8000 --directory desktop/web
+# Tauri CLI
+cargo install create-tauri-app --locked
+cargo install tauri-cli --locked --version "^2"
 ```
 
-The web UI lives in `desktop/web/index.html` and talks to `localhost:9120`.
-
-### 2. Tauri wrapper (optional, native window)
-
-The web UI is already self-contained — to wrap it as a desktop app:
+## Local dev
 
 ```bash
-# prerequisites: Rust toolchain + Node 20+
-npx create-tauri-app@latest agentic-shell -- --template vanilla --manager npm
-# replace src/index.html with desktop/web/index.html
-# in tauri.conf.json, set
-#   build.devUrl  = "http://localhost:9120"   (optional)
-#   build.beforeDevCommand = ""               (we serve from Python)
-#   bundle.identifier = "com.agentic.engine"
-npm run tauri dev
+cd desktop
+cargo tauri dev
 ```
 
-We deliberately do NOT vendor the Tauri sidecar — the FastAPI backend is the
-single source of truth. The native shell only renders HTML and forwards
-HTTP requests.
+`beforeDevCommand` will spawn `uvicorn agentic_engine.server:app --port 8765 --reload`.
 
-## Why no React/Vite?
+## Build native bundle
 
-A single static HTML file (~6 KB) keeps install friction at zero and avoids
-build pipelines. If you outgrow it, swap in any framework you like.
+```bash
+cargo tauri build
+# artifacts -> desktop/target/release/bundle/{dmg,msi,deb,appimage}/
+```
+
+## Configuration knobs
+
+| Env / file                        | Effect                                         |
+|-----------------------------------|------------------------------------------------|
+| `AGENTIC_ADMIN_KEY`               | Forces admin-key auth (recommended in release) |
+| `AGENTIC_JWT_SECRET`              | Enables `/auth/token` issuance + Bearer auth   |
+| `AGENTIC_HOME`                    | Override data dir (default `~/.agentic-engine`)|
+| `tauri.conf.json` → `app.windows` | Window size, title, default URL                |
+
+## Security notes
+
+* The webview CSP only allows `http://127.0.0.1:8765` and `ws://127.0.0.1:8765` —
+  loopback only.
+* The FastAPI server inherits the rate-limit middleware (`slowapi`) and the
+  same auth surface as headless deployments. There is no extra "trust the
+  shell" code path.
+* For distribution, code-sign the bundle (macOS `codesign` / Windows
+  Authenticode) and ship a hardened runtime — Tauri's defaults are sane.

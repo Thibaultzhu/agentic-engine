@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 from typing import Annotated
 
@@ -77,8 +76,8 @@ def test_dispatch_json_extracts_from_fence_and_prose():
 # ---------- Memory bootstrap cap ----------
 def test_memory_bootstrap_caps_per_scope(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     from agentic_engine.core.memory import Memory
@@ -95,8 +94,8 @@ def test_memory_bootstrap_caps_per_scope(tmp_path, monkeypatch):
 # ---------- Sessions hard delete ----------
 def test_sessions_delete_session_and_project(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     from agentic_engine.core.sessions import SessionStore
@@ -123,8 +122,8 @@ def test_sessions_delete_session_and_project(tmp_path, monkeypatch):
 # ---------- Cron enable/disable ----------
 def test_cron_enable_disable(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     from agentic_engine.core.cron import CronManager
@@ -143,8 +142,8 @@ def test_cron_enable_disable(tmp_path, monkeypatch):
 # ---------- pricing.json override ----------
 def test_pricing_override_via_json(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     (tmp_path / "pricing.json").write_text(
@@ -386,11 +385,12 @@ def test_agent_truncates_huge_tool_results(monkeypatch):
 def test_server_devteam_async_jobs(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
     monkeypatch.delenv("AGENTIC_ADMIN_KEY", raising=False)
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     import importlib
+
     import agentic_engine.server as srv
     importlib.reload(srv)
 
@@ -432,11 +432,12 @@ def test_server_devteam_async_jobs(tmp_path, monkeypatch):
 def test_server_cron_endpoints(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
     monkeypatch.delenv("AGENTIC_ADMIN_KEY", raising=False)
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     import importlib
+
     import agentic_engine.server as srv
     importlib.reload(srv)
 
@@ -461,7 +462,7 @@ def test_server_cron_endpoints(tmp_path, monkeypatch):
 
 # ---------- Adapters: split & re-exports ----------
 def test_imadapter_split_and_reexports():
-    from agentic_engine.adapters import IMSender, IMReceiver, IMAdapter
+    from agentic_engine.adapters import IMAdapter, IMReceiver, IMSender
     assert issubclass(IMAdapter, IMSender)
     assert issubclass(IMAdapter, IMReceiver)
 
@@ -478,8 +479,8 @@ def test_top_level_reexports_ops():
 # ---------- LLM via respx mock ----------
 def test_llm_chat_via_respx(monkeypatch):
     pytest.importorskip("respx")
-    import respx
     import httpx as _httpx
+    import respx
     from openai import OpenAI
 
     fake = {

@@ -12,22 +12,26 @@ Robustness knobs:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 
 from ..config import get_settings
-from ..llm import chat
+from ..llm import chat, chat_stream
 from .memory import Memory
 from .permissions import PermissionMode
 from .tool import Tool
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .sessions import SessionStore
 
 _console = Console()
 logger = logging.getLogger(__name__)
@@ -71,6 +75,11 @@ class Agent:
     tool_result_max_chars: int = 8000
     history_window: int = 40
     transient_retries: int = 3
+    # Optional persistence — when both store and session_id are set, every
+    # assistant/tool turn is appended to the session.
+    store: SessionStore | None = None
+    session_id: str | None = None
+    autosave: bool = True
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     # ---------- tool helpers ----------
@@ -134,6 +143,15 @@ class Agent:
             tail = messages[i:]
         return head + tail
 
+    # ---------- persistence ----------
+    def _persist(self, role: str, content: str) -> None:
+        if not (self.autosave and self.store and self.session_id):
+            return
+        try:
+            self.store.append(self.session_id, role, content)  # type: ignore[union-attr]
+        except Exception as e:  # noqa: BLE001
+            logger.debug("session autosave failed: %s", e)
+
     # ---------- main loop ----------
     def run(self, user_input: str, verbose: bool = True) -> AgentResult:
         s = get_settings()
@@ -146,6 +164,7 @@ class Agent:
             {"role": "system", "content": "\n\n".join(sys_parts)},
             {"role": "user", "content": user_input},
         ]
+        self._persist("user", user_input)
 
         tool_calls_total = 0
         for turn in range(self.max_turns):
@@ -174,6 +193,7 @@ class Agent:
             if not msg.tool_calls:
                 if verbose:
                     _console.print(f"[bold cyan]{self.name}[/]: {msg.content}")
+                self._persist("assistant", msg.content or "")
                 return AgentResult(
                     agent=self.name,
                     output=msg.content or "",
@@ -220,3 +240,56 @@ class Agent:
             turns=self.max_turns,
             raw_messages=messages,
         )
+
+    # ---------- async + streaming ----------
+    async def run_async(self, user_input: str, verbose: bool = False) -> AgentResult:
+        """Async wrapper around :meth:`run` — offloads to a worker thread."""
+        return await asyncio.to_thread(self.run, user_input, verbose)
+
+    def run_stream(self, user_input: str) -> Iterator[str]:
+        """Stream assistant text. No tool-calling — pure generation.
+
+        For a tool-calling stream you still want :meth:`run` (final answer).
+        Yields content deltas as they arrive from the LLM.
+        """
+        s = get_settings()
+        sys_parts = [self.system_prompt or f"You are {self.name}, a {self.role} agent."]
+        if self.memory and self.use_bootstrap_memory:
+            mem_block = self.memory.bootstrap_block().strip()
+            if mem_block:
+                sys_parts.append("# Persistent memory\n" + mem_block)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": "\n\n".join(sys_parts)},
+            {"role": "user", "content": user_input},
+        ]
+        self._persist("user", user_input)
+        out_parts: list[str] = []
+        for piece in chat_stream(
+            messages=messages,
+            model=self.model or s.model_default,
+            temperature=self.temperature,
+        ):
+            out_parts.append(piece)
+            yield piece
+        self._persist("assistant", "".join(out_parts))
+
+    async def run_stream_async(self, user_input: str) -> AsyncIterator[str]:
+        """Async generator equivalent of :meth:`run_stream`.
+
+        Each underlying chunk arrives synchronously from the OpenAI client; we
+        yield it from a worker thread so the async event loop is not blocked.
+        """
+        loop = asyncio.get_event_loop()
+        gen = self.run_stream(user_input)
+
+        def _next() -> str | None:
+            try:
+                return next(gen)
+            except StopIteration:
+                return None
+
+        while True:
+            piece = await loop.run_in_executor(None, _next)
+            if piece is None:
+                break
+            yield piece

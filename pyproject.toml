@@ -1,11 +1,26 @@
 [project]
 name = "agentic-engine"
-version = "0.2.1"
+version = "0.3.0"
 description = "An original multi-agent engineering framework inspired by industry patterns (CrewAI / AutoGen / LangGraph). Built on Bailian Qwen."
 authors = [{ name = "Thibaultzhu" }]
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
+keywords = ["agent", "multi-agent", "llm", "qwen", "bailian", "openai", "fastapi", "typer", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
 dependencies = [
     "openai>=1.40.0",
     "pydantic>=2.6",
@@ -19,31 +34,72 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "respx>=0.21"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "respx>=0.21",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+    "types-PyYAML",
+]
 cron = ["apscheduler>=3.10"]
 computer-use = ["pyautogui>=0.9.54", "mss>=9.0", "pillow>=10"]
+auth = ["python-jose[cryptography]>=3.3", "passlib[bcrypt]>=1.7"]
+log = ["structlog>=24.1"]
+otel = [
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp>=1.25",
+    "opentelemetry-instrumentation-fastapi>=0.46b0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
+]
+rag = ["chromadb>=0.5"]
+ratelimit = ["slowapi>=0.1.9"]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 full = [
     "apscheduler>=3.10",
     "pyautogui>=0.9.54",
     "mss>=9.0",
     "pillow>=10",
     "respx>=0.21",
+    "structlog>=24.1",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "slowapi>=0.1.9",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Thibaultzhu/agentic-engine"
+Documentation = "https://github.com/Thibaultzhu/agentic-engine/tree/main/docs"
+Issues = "https://github.com/Thibaultzhu/agentic-engine/issues"
+Changelog = "https://github.com/Thibaultzhu/agentic-engine/blob/main/CHANGELOG.md"
 
 [project.scripts]
 agentic = "agentic_engine.cli:app"
 
+[project.entry-points."agentic_engine.tools"]
+# Built-in tools registered as entry points so third-party packages can extend.
+# Format: <name> = "<module:attr>"
+# Third parties: declare your own [project.entry-points."agentic_engine.tools"] section.
+
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["agentic_engine*"]
 
+[tool.setuptools.package-data]
+agentic_engine = ["py.typed"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py310"
-extend-exclude = ["desktop/web", "build", "dist"]
+extend-exclude = ["desktop/web", "build", "dist", "site"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "SIM"]
@@ -60,7 +116,28 @@ ignore = [
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.testclient",
     "ignore::DeprecationWarning:httpx",
+    "ignore::DeprecationWarning:pkg_resources",
 ]
+
+[tool.mypy]
+python_version = "3.10"
+strict_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = "(^build/|^dist/|^site/|^desktop/)"
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+ignore_errors = true
+
+[tool.bandit]
+exclude_dirs = ["tests", "build", "dist", "site"]
+skips = ["B101", "B404", "B603"]

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -132,3 +133,54 @@ def chat(
         except Exception as e:  # noqa: BLE001
             logger.debug("usage tracking failed: %s", e)
     return resp
+
+
+def chat_stream(
+    messages: list[dict[str, Any]],
+    model: str | None = None,
+    temperature: float = 0.7,
+    provider: str | None = None,
+    extra_body: dict[str, Any] | None = None,
+) -> Iterator[str]:
+    """Streaming chat completion — yields delta content chunks (no tool-calls).
+
+    Tool-calling streams are intentionally out of scope here; use ``chat()``
+    when you need the full message+tool_calls envelope. ``chat_stream`` is
+    designed for end-user-facing UIs that just want the textual answer to
+    appear progressively.
+    """
+    s = get_settings()
+    if provider:
+        prov = PROVIDERS[provider]
+        client = prov.client()
+        used_model = model or prov.default_model
+    else:
+        client = make_client()
+        used_model = model or s.model_default
+    kwargs: dict[str, Any] = {
+        "model": used_model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    stream = client.chat.completions.create(**kwargs)
+    for chunk in stream:
+        try:
+            delta = chunk.choices[0].delta
+            piece = getattr(delta, "content", None)
+            if piece:
+                yield piece
+        except (IndexError, AttributeError):
+            continue
+
+
+async def achat(
+    messages: list[dict[str, Any]],
+    **kwargs: Any,
+) -> Any:
+    """Async wrapper around :func:`chat` — runs the sync OpenAI client in a thread."""
+    import asyncio
+
+    return await asyncio.to_thread(chat, messages, **kwargs)

@@ -1,0 +1,20 @@
+[
+  {
+    "name": "echo-greeting",
+    "input": "Reply with exactly: hello world",
+    "expect": {"kind": "contains", "value": "hello world"},
+    "rubric": "exact phrase 'hello world' appears in the answer"
+  },
+  {
+    "name": "json-passthrough",
+    "input": "Return only the JSON: {\"answer\": 42}",
+    "expect": {"kind": "regex", "value": "\\\"answer\\\"\\s*:\\s*42"},
+    "rubric": "answer contains JSON {answer: 42}"
+  },
+  {
+    "name": "math-add",
+    "input": "What is 17 + 25? Reply with just the number.",
+    "expect": {"kind": "regex", "value": "\\b42\\b"},
+    "rubric": "the integer 42 appears"
+  }
+]

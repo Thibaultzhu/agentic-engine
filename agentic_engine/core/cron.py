@@ -4,42 +4,73 @@ Stores job definitions in {home}/cron.json so they survive restarts.
 Each job carries a payload `{type: "agent_turn", message, model}` that is
 executed by spinning up an Agent on demand.
 
+v0.3 additions:
+    * ``max_retries``, ``retry_backoff_s`` per job
+    * dead-letter queue at ``{home}/cron.dlq.jsonl``
+    * ``runs(job_id)`` — recent run history (success/error/elapsed)
+
 Install:  pip install apscheduler
 """
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import json
+import logging
+import time
 import uuid
+from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from ..config import get_settings
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class CronJob:
     id: str
     name: str
-    schedule: dict[str, Any]   # {"kind":"cron","expr":"0 9 * * *"} | {"kind":"interval","seconds":N} | {"kind":"date","run_at":"ISO"}
-    payload: dict[str, Any]    # {"type":"agent_turn","message":"...","model":None}
+    schedule: dict[str, Any]
+    payload: dict[str, Any]
     enabled: bool = True
+    max_retries: int = 0
+    retry_backoff_s: float = 5.0
+
+
+@dataclass
+class CronRun:
+    job_id: str
+    started_at: str
+    elapsed_s: float
+    ok: bool
+    error: str = ""
+    attempts: int = 1
 
 
 class CronManager:
     def __init__(self, runner: Callable[[dict[str, Any]], Any] | None = None):
         s = get_settings()
         self.path = s.home / "cron.json"
+        self.dlq_path = s.home / "cron.dlq.jsonl"
         self.runner = runner or self._default_runner
         self._scheduler = None
         self.jobs: list[CronJob] = self._load()
+        self._runs: dict[str, deque[CronRun]] = {}
 
     def _load(self) -> list[CronJob]:
         if not self.path.exists():
             return []
         data = json.loads(self.path.read_text())
-        return [CronJob(**j) for j in data]
+        out: list[CronJob] = []
+        for j in data:
+            # Tolerate older payloads that lack new optional fields.
+            j.setdefault("max_retries", 0)
+            j.setdefault("retry_backoff_s", 5.0)
+            out.append(CronJob(**j))
+        return out
 
     def _save(self) -> None:
         self.path.write_text(
@@ -47,10 +78,13 @@ class CronManager:
         )
 
     # ---------- CRUD ----------
-    def add(self, name: str, schedule: dict[str, Any], payload: dict[str, Any]) -> CronJob:
-        # Validate schedule eagerly so bad input doesn't poison cron.json.
+    def add(self, name: str, schedule: dict[str, Any], payload: dict[str, Any],
+            max_retries: int = 0, retry_backoff_s: float = 5.0) -> CronJob:
         self._build_trigger(schedule)
-        job = CronJob(id=uuid.uuid4().hex[:8], name=name, schedule=schedule, payload=payload)
+        job = CronJob(
+            id=uuid.uuid4().hex[:8], name=name, schedule=schedule, payload=payload,
+            max_retries=max_retries, retry_backoff_s=retry_backoff_s,
+        )
         self.jobs.append(job)
         self._save()
         if self._scheduler:
@@ -94,6 +128,9 @@ class CronManager:
     def list(self) -> list[CronJob]:
         return list(self.jobs)
 
+    def runs(self, job_id: str) -> list[CronRun]:
+        return list(self._runs.get(job_id, []))
+
     # ---------- runtime ----------
     def start(self) -> None:
         from apscheduler.schedulers.background import BackgroundScheduler
@@ -110,7 +147,56 @@ class CronManager:
 
     def _add_to_scheduler(self, job: CronJob) -> None:
         trig = self._build_trigger(job.schedule)
-        self._scheduler.add_job(self.runner, trigger=trig, args=[job.payload], id=job.id, replace_existing=True)
+        self._scheduler.add_job(  # type: ignore[union-attr]
+            self._invoke_with_retry,
+            trigger=trig,
+            args=[job],
+            id=job.id,
+            replace_existing=True,
+        )
+
+    def _invoke_with_retry(self, job: CronJob) -> None:
+        """Run ``self.runner(job.payload)`` with exponential-backoff retry.
+
+        On terminal failure, append the (job, error) to the dead-letter
+        JSONL file so a human can inspect.
+        """
+        attempts = 0
+        last_err = ""
+        started = _dt.datetime.now().isoformat(timespec="seconds")
+        t0 = time.time()
+        for attempts in range(job.max_retries + 1):
+            try:
+                self.runner(job.payload)
+                self._record_run(CronRun(
+                    job_id=job.id, started_at=started, elapsed_s=time.time() - t0,
+                    ok=True, attempts=attempts + 1,
+                ))
+                return
+            except Exception as e:  # noqa: BLE001
+                last_err = f"{type(e).__name__}: {e}"
+                logger.warning("[cron] %s attempt %d failed: %s", job.id, attempts + 1, last_err)
+                if attempts < job.max_retries:
+                    time.sleep(job.retry_backoff_s * (2 ** attempts))
+        # Terminal failure → DLQ.
+        self._dlq(job, last_err)
+        self._record_run(CronRun(
+            job_id=job.id, started_at=started, elapsed_s=time.time() - t0,
+            ok=False, error=last_err, attempts=attempts + 1,
+        ))
+
+    def _record_run(self, run: CronRun) -> None:
+        bucket = self._runs.setdefault(run.job_id, deque(maxlen=20))
+        bucket.append(run)
+
+    def _dlq(self, job: CronJob, error: str) -> None:
+        line = json.dumps({
+            "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+            "job_id": job.id, "name": job.name, "payload": job.payload, "error": error,
+        }, ensure_ascii=False)
+        self.dlq_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.dlq_path.open("a") as f:
+            f.write(line + "\n")
 
     @staticmethod
     def _build_trigger(schedule: dict[str, Any]):

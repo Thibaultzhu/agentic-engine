@@ -1,11 +1,10 @@
 """Smoke tests for Phase-2 modules — sessions / cron / usage / providers."""
-import os
 
 
 def test_sessions_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     from agentic_engine.core.sessions import SessionStore
@@ -22,8 +21,8 @@ def test_sessions_roundtrip(tmp_path, monkeypatch):
 
 def test_usage_tracker(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     from agentic_engine.core.usage import UsageTracker, estimate_cost
@@ -39,8 +38,8 @@ def test_usage_tracker(tmp_path, monkeypatch):
 
 def test_cron_persist(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
 
     from agentic_engine.core.cron import CronManager
@@ -67,7 +66,7 @@ def test_providers_table():
 
 
 def test_diff_tool_registered():
-    from agentic_engine.tools import git_status, git_diff, git_log
+    from agentic_engine.tools import git_diff, git_log, git_status
     assert git_status.name == "git_status"
     assert git_diff.read_only is True
     assert git_log.read_only is True
@@ -75,7 +74,7 @@ def test_diff_tool_registered():
 
 def test_screen_tool_lazy():
     # Should import even if pyautogui/mss aren't installed
-    from agentic_engine.tools import screen_grab, mouse_click
+    from agentic_engine.tools import mouse_click, screen_grab
     assert screen_grab.name == "screen_grab"
     assert mouse_click.requires_approval is True
 

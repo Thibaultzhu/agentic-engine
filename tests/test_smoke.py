@@ -1,6 +1,5 @@
 """Smoke tests — no real LLM calls, just import + structural checks."""
 import importlib
-import os
 
 
 def test_import_root():
@@ -14,7 +13,7 @@ def test_import_root():
 
 
 def test_tool_decorator_registers():
-    from agentic_engine.core.tool import tool, registry
+    from agentic_engine.core.tool import registry, tool
 
     @tool(name="_t_demo", description="demo")
     def _demo(x: int, y: str = "z") -> str:
@@ -27,8 +26,8 @@ def test_tool_decorator_registers():
 
 def test_memory_scopes(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTIC_HOME", str(tmp_path))
-    from agentic_engine.config import Settings
     import agentic_engine.config as cfg
+    from agentic_engine.config import Settings
     cfg._settings = Settings.load()
     from agentic_engine.core.memory import Memory
     m = Memory()
