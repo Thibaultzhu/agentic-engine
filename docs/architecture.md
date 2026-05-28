@@ -1,159 +1,105 @@
-# agentic-engine 架构设计
+# architecture
 
-本文件解释 **本项目** 的设计选择。它独立于任何上游项目；所有命名、模块边界、
-API 都是为本仓库量身定制的。
+`agentic-engine` is structured in three layers.
 
-## 目标
+## Layer 1 — primitives (`core/`)
 
-- **小** — 全部 core 代码 < 1000 行 Python，能在一晚读完。
-- **可调试** — 不引入运行时元编程或 DSL；Agent 只是一个数据类加一个 while 循环。
-- **跑得起来** — 默认指向阿里云百炼 OpenAI 兼容端点，开箱可用。
-- **可演进** — 五个 core 原语相互正交，新增能力只需扩展工具或换模型。
+The five primitives that every multi-agent framework eventually rediscovers:
 
-## 五原语
+- `Agent` — owns a system prompt, a tool set, a permission mode, an LLM
+  client and a tool-calling loop with a turn budget. The loop runs
+  user → LLM → (tool calls?) → tool execution → LLM → … until the model
+  emits a final assistant message or the budget is exhausted.
+- `Tool` — a Python function decorated with `@tool(...)`. The decorator
+  inspects the function signature, builds a JSON schema from the type hints
+  and registers the tool in a process-global registry. Each tool carries
+  `read_only` and `requires_approval` flags consumed by the permission gate.
+- `PermissionMode` — `default` / `plan` / `accept_edits` / `bypass` /
+  `dont_ask`. Modelled after how real engineering teams treat sandboxed vs
+  unrestricted execution. The agent calls `policy.check(tool)` before every
+  invocation; the result drives an optional approval hook.
+- `Memory` — file-backed under `~/.agentic-engine/`, with four scopes
+  (`user`, `feedback`, `project`, `reference`) plus daily logs. The
+  bootstrap block is injected into the system prompt at run-start.
+- `SkillRegistry` — markdown plugins. A skill is a directory containing
+  `SKILL.md` with YAML frontmatter (name, description, version, triggers).
+  Three search paths: bundled `./skills/`, user `~/.agentic-engine/skills/`,
+  project `./.agentic/skills/`.
+
+`Orchestrator` composes agents in three modes: sequential pipe, parallel
+fan-out (thread pool), and dispatch (leader → workers → consolidator).
+
+## Layer 2 — operations (`core/sessions.py`, `core/cron.py`, `core/usage.py`, `core/mcp.py`, `core/worktree.py`)
+
+Production agents need bookkeeping the framework should provide instead of
+forcing every user to invent it.
+
+- `SessionStore` (sqlite) — `projects`, `sessions`, `messages` tables. New
+  conversations are scoped to a project; a project is scoped to a directory
+  on disk. `append`, `history`, `archive`, `rename` cover the full CRUD.
+- `CronManager` — APScheduler `BackgroundScheduler` driven by JSON-persisted
+  jobs. Each job carries a `payload` consumed by a runner; the default
+  runner builds a fresh `Agent` and runs `payload["message"]` non-interactively.
+- `UsageTracker` — every successful LLM call is recorded as a JSONL line
+  with prompt/completion tokens, model and CNY cost estimate. `summary()`
+  rolls up by model.
+- `MCPClient` — minimal stdio JSON-RPC 2.0 client following the public MCP
+  spec. `as_tools()` wraps each remote tool as a local `Tool` so MCP
+  servers participate in the regular tool-calling loop.
+- `add_worktree(repo, branch)` — wraps `git worktree add`. Long-running or
+  destructive agent runs get their own checkout under
+  `<repo>/../.agentic-worktrees/`.
+
+## Layer 3 — surfaces (`cli.py`, `server.py`, `adapters/`, `desktop/`)
+
+- `cli.py` — `typer` app exposing every subsystem (`chat`, `dev-team`,
+  `sessions`, `cron`, `usage`, `worktree`, `skills`, `memory`, `serve`).
+- `server.py` — FastAPI HTTP server. Health, chat, dev-team, sessions
+  CRUD, cron CRUD, usage rollup, plus `/h5/token` + `/h5/page` for
+  short-lived public sharing.
+- `adapters/` — IM channel abstractions. `IMAdapter` is the ABC; current
+  implementations: `FeishuAdapter`, `DingTalkAdapter` (webhook stubs),
+  `TelegramAdapter` (live, long-polling), `WeChatAdapter` (group bot
+  webhook, one-way).
+- `desktop/web/index.html` — single-file 3-pane console (sessions, log,
+  status). Talks to the FastAPI server over plain JSON. A Tauri wrap is
+  optional and described in `desktop/README.md`.
+
+## Multi-provider LLM client
+
+`llm/__init__.py` keeps a `PROVIDERS` table:
+
+| key          | base_url                                                           | default model     |
+|--------------|--------------------------------------------------------------------|-------------------|
+| bailian-cn   | https://dashscope.aliyuncs.com/compatible-mode/v1                  | qwen-plus         |
+| bailian-sg   | https://dashscope-intl.aliyuncs.com/compatible-mode/v1             | qwen-plus         |
+| deepseek     | https://api.deepseek.com/v1                                        | deepseek-chat     |
+| openai       | https://api.openai.com/v1                                          | gpt-4o-mini       |
+| ollama       | http://localhost:11434/v1                                          | qwen2.5:7b        |
+
+`chat(..., provider="deepseek")` swaps the client; agents stay unchanged.
+
+## Data on disk
+
+Everything lives under `${AGENTIC_HOME:-~/.agentic-engine}`:
 
 ```
-+-------------+    uses     +-----------+
-|   Agent     |-----------> |  Tool[]   |
-+-------------+             +-----------+
-       |                          ^
-       | reads at start           | invokes
-       v                          |
-+-------------+             +-----------+
-|  Memory     |             |   LLM     |  (Bailian / Qwen)
-+-------------+             +-----------+
-       ^
-       | injects skill body
-+-------------+
-| SkillReg.   |
-+-------------+
-
-           composed by
-+-------------+
-| Orchestrator| ---> sequential | parallel | team-dispatch
-+-------------+
+~/.agentic-engine/
+├── memory/             # user.md, feedback.md, project.md, reference.md, YYYY-MM-DD.md
+├── sessions.db         # sqlite SessionStore
+├── usage.jsonl         # token-usage ledger
+├── cron.json           # scheduled jobs
+└── skills/             # user-level skills
 ```
 
-### Agent — `core/agent.py`
+## Design properties
 
-A dataclass plus `run()`. The loop is the standard tool-calling pattern:
-
-1. Build `messages`: `[system, user]`. The system message folds in the agent's
-   own prompt, plus an optional bootstrap dump of `Memory`.
-2. Send to the LLM with the agent's tool list.
-3. If the response carries `tool_calls`, execute each one (subject to the
-   permission mode), append a `tool` message per call, loop.
-4. Otherwise, return the assistant content as `AgentResult.output`.
-
-The maximum-turn cap is a hard guard: nothing magic happens at the limit, the
-agent simply yields an `[max_turns reached]` output and lets the caller decide.
-
-### Tool — `core/tool.py`
-
-A `@tool(...)` decorator inspects the wrapped function's signature and type
-hints to produce an OpenAI-compatible JSON schema. This means writing a new
-tool is just writing a Python function — no manual schema authoring.
-
-Every tool carries two flags:
-
-- `read_only` — pure-read tools (Read, Grep, list_dir) are safe to auto-allow
-  under stricter permission modes.
-- `requires_approval` — tools that mutate or execute (write_file, bash_run)
-  flip this on, so the permission layer can intercept.
-
-### Orchestrator — `core/orchestrator.py`
-
-Three composition modes, all using the same `Agent.run` underneath:
-
-- `run_sequential([a, b, c], "goal")` — output of `a` is the input of `b`.
-- `run_parallel({"a": "...", "b": "..."})` — `ThreadPoolExecutor` fans out.
-- `dispatch(leader, goal)` — leader plans (JSON of subtasks), members execute
-  in parallel, leader consolidates.
-
-Background / cron-style execution is delegated to whatever scheduler the host
-prefers (your shell, systemd, the user's existing cron tool); this framework
-deliberately does not embed one.
-
-### Memory — `core/memory.py`
-
-Plain markdown files under `~/.agentic-engine/memory/`. Four scopes:
-
-| Scope     | What goes here                                                |
-|-----------|---------------------------------------------------------------|
-| user      | Identity, role, preferences. Stable across projects.          |
-| feedback  | Concrete corrections of the agent's behaviour.                |
-| project   | Things you can't infer from code or git history.              |
-| reference | Pointers to dashboards, tickets, runbooks.                    |
-
-Plus `memory/daily/YYYY-MM-DD.md` for unstructured per-day scratch. The
-bootstrap injection only pulls the four scope files, so daily logs stay out of
-the prompt budget.
-
-### SkillRegistry — `core/skills.py`
-
-A skill is a folder containing `SKILL.md`. Frontmatter declares `name`,
-`description`, `version`, `triggers`. The body is free-form markdown the agent
-reads when the skill is selected.
-
-Lookup order (later wins on name collision):
-
-1. `<repo>/skills/`
-2. `~/.agentic-engine/skills/`
-3. `./.agentic/skills/` (project-local)
-
-`registry.find(query)` returns matching skills by trigger substring; agents can
-then concatenate the body into their system prompt.
-
-## Permission model — `core/permissions.py`
-
-Five modes, each documenting a different risk posture:
-
-| Mode            | Behaviour                                              |
-|-----------------|--------------------------------------------------------|
-| `default`       | Tool needs approval ⇒ ask `approval_hook`              |
-| `plan`          | Every tool call requires approval                      |
-| `accept_edits`  | Read-only tools auto-allowed; writes still ask         |
-| `bypass`        | Anything goes (only for trusted automation)            |
-| `dont_ask`      | Reject anything not pre-allowed                        |
-
-The `Agent.approval_hook` is just a callable `(tool_name, args) -> bool`. CLIs
-prompt the user; servers check an ACL; tests return `True` unconditionally.
-
-## LLM client — `llm/__init__.py`
-
-Single function: `chat(messages, model, tools, temperature, extra_body)`. It
-wraps the official `openai` SDK pointed at Bailian's compatible endpoint, so
-any OpenAI-shaped API (Qwen, DeepSeek, vLLM, Ollama with `--api`) works as a
-drop-in.
-
-Region is selected once at startup from `AGENTIC_REGION=cn|sg`. Failover
-between regions is delegated to the caller — wrap `chat()` in a `try/except`
-and re-call with `make_client(api_key=other_key, base_url=other_url)`.
-
-## Adapters — `adapters/`
-
-`IMAdapter` is a two-method ABC: `send(chat_id, text)` and `listen(callback)`.
-Concrete classes (`FeishuAdapter`, `DingTalkAdapter`) implement only what their
-target platform needs. The framework does not bundle a webhook server — wire
-the callback to your own FastAPI / Flask route.
-
-## Teams — `teams/`
-
-Pre-baked compositions return ready-to-run `Orchestrator` instances:
-
-- `build_dev_team()` — PM → Architect → Developer → Reviewer → Tester.
-- `build_research_team()` — Scout → Analyst → Reporter.
-
-Each is ~30 lines; copy and adapt rather than configure.
-
-## Trade-offs we accepted
-
-- **No async.** Agents block; `run_parallel` uses threads. Most LLM workloads
-  are I/O-bound, threads are simpler, and async would make the code bigger
-  without measurable gain at this scale.
-- **No vector DB.** Memory is markdown plus substring search. If you need
-  semantic retrieval, plug Chroma or LanceDB into a custom tool — don't bake
-  it into core.
-- **No GUI.** A desktop client is a big separate project. The CLI plus the
-  optional FastAPI server cover headless and remote use cases. Anyone wanting
-  a UI should consume the HTTP endpoints.
+- **Original** — every module is written from scratch; the cc-haha source
+  is cited only conceptually in `docs/cc-haha-architecture-study.md`.
+- **Optional dependencies** — APScheduler, pyautogui, mss are only needed
+  for cron and computer-use; the package installs and tests pass without
+  them.
+- **Provider-agnostic** — anything OpenAI-compatible plugs in via
+  `PROVIDERS`. No model is hard-coded into agent logic.
+- **Single-process by default** — orchestration uses threads, not heavy
+  IPC. Worktrees + session ids give logical isolation when you need it.

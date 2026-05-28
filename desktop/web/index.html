@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agentic-engine · console</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, system-ui, Helvetica, Arial, sans-serif;
+         margin: 0; height: 100vh; display: grid;
+         grid-template-columns: 220px 1fr 280px;
+         background: #fafafa; color: #222; }
+  .sidebar { border-right: 1px solid #e5e5e5; background: #fff; padding: 12px; overflow: auto; }
+  .main    { display: flex; flex-direction: column; }
+  .right   { border-left: 1px solid #e5e5e5; background: #fff; padding: 12px; overflow: auto; font-size: 13px; }
+  .log     { flex: 1; overflow: auto; padding: 16px; }
+  .input   { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #e5e5e5; background: #fff; }
+  input, textarea, button {
+    font: inherit; border: 1px solid #d1d1d1; border-radius: 8px; padding: 8px 12px; background: #fff;
+  }
+  textarea { flex: 1; resize: none; min-height: 44px; max-height: 200px; }
+  button   { background: #0a84ff; color: #fff; border-color: #0a84ff; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: not-allowed; }
+  .msg     { margin-bottom: 14px; line-height: 1.5; }
+  .msg .who { font-weight: 600; color: #555; font-size: 12px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .04em; }
+  .msg pre { background: #f3f3f3; padding: 8px 10px; border-radius: 6px; overflow: auto; }
+  h3       { margin: 0 0 8px; font-size: 13px; color: #777; text-transform: uppercase; letter-spacing: .04em; }
+  ul.list  { list-style: none; padding: 0; margin: 0; }
+  ul.list li { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+  ul.list li:hover  { background: #f0f0f0; }
+  ul.list li.active { background: #e0efff; color: #0a84ff; font-weight: 600; }
+  .pill    { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background: #eef; color: #335; margin-right: 4px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1c1c1e; color: #ddd; }
+    .sidebar, .right, .input, input, textarea { background: #2c2c2e; border-color: #3a3a3c; color: #ddd; }
+    .msg pre { background: #2c2c2e; }
+    ul.list li:hover { background: #3a3a3c; }
+    ul.list li.active { background: #0a84ff; color: #fff; }
+  }
+</style>
+</head>
+<body>
+  <aside class="sidebar">
+    <h3>Sessions</h3>
+    <button id="new-sess" style="width:100%;margin-bottom:8px">+ new</button>
+    <ul class="list" id="sessions"></ul>
+  </aside>
+
+  <section class="main">
+    <div class="log" id="log"></div>
+    <form class="input" id="form">
+      <textarea id="input" placeholder="Type… (⌘/Ctrl+Enter to send)"></textarea>
+      <button id="send">Send</button>
+    </form>
+  </section>
+
+  <aside class="right">
+    <h3>Status</h3>
+    <div id="status">connecting…</div>
+    <h3 style="margin-top:18px">Usage</h3>
+    <pre id="usage" style="font-size:12px"></pre>
+    <h3 style="margin-top:18px">Cron</h3>
+    <pre id="cron" style="font-size:12px"></pre>
+  </aside>
+
+<script>
+const API = location.origin || "http://localhost:9120";
+let currentSession = null;
+
+async function api(path, opts={}) {
+  const r = await fetch(API + path, {
+    headers: {"Content-Type": "application/json", ...(opts.headers||{})},
+    ...opts,
+  });
+  return r.json();
+}
+
+async function refreshHealth() {
+  try {
+    const j = await api("/health");
+    document.getElementById("status").textContent = "ok · v" + j.version;
+  } catch (e) {
+    document.getElementById("status").textContent = "offline";
+  }
+}
+
+async function refreshUsage() {
+  const j = await api("/usage").catch(()=>({}));
+  document.getElementById("usage").textContent = JSON.stringify(j, null, 2);
+}
+
+async function refreshCron() {
+  const j = await api("/cron").catch(()=>({jobs:[]}));
+  document.getElementById("cron").textContent = JSON.stringify(j.jobs, null, 2);
+}
+
+async function refreshSessions() {
+  const j = await api("/sessions").catch(()=>({sessions:[]}));
+  const ul = document.getElementById("sessions");
+  ul.innerHTML = "";
+  (j.sessions||[]).forEach(s => {
+    const li = document.createElement("li");
+    li.textContent = s.title + " · " + (s.id || "").slice(0,6);
+    if (s.id === currentSession) li.classList.add("active");
+    li.onclick = () => loadSession(s.id);
+    ul.appendChild(li);
+  });
+}
+
+async function loadSession(sid) {
+  currentSession = sid;
+  await refreshSessions();
+  const j = await api("/sessions/" + sid);
+  const log = document.getElementById("log");
+  log.innerHTML = "";
+  (j.messages||[]).forEach(m => append(m.role, m.content));
+}
+
+function append(who, text) {
+  const log = document.getElementById("log");
+  const div = document.createElement("div");
+  div.className = "msg";
+  div.innerHTML = '<div class="who">' + who + '</div><div>' + escapeHtml(text).replace(/\n/g,"<br>") + '</div>';
+  log.appendChild(div); log.scrollTop = log.scrollHeight;
+}
+
+function escapeHtml(s) { return (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+document.getElementById("new-sess").onclick = async () => {
+  const j = await api("/sessions", {method:"POST", body: JSON.stringify({project_name:"default", title: new Date().toLocaleString()})});
+  await refreshSessions();
+  loadSession(j.session.id);
+};
+
+document.getElementById("form").onsubmit = async (e) => {
+  e.preventDefault();
+  const inp = document.getElementById("input");
+  const text = inp.value.trim(); if (!text) return;
+  inp.value = ""; append("user", text);
+  const btn = document.getElementById("send"); btn.disabled = true;
+  const j = await api("/chat", {method:"POST", body: JSON.stringify({message:text, session_id: currentSession})});
+  append("agent", j.output || JSON.stringify(j));
+  btn.disabled = false;
+  refreshUsage();
+};
+
+document.getElementById("input").addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    document.getElementById("form").dispatchEvent(new Event("submit"));
+  }
+});
+
+(async function init() {
+  await refreshHealth();
+  await refreshSessions();
+  await refreshUsage();
+  await refreshCron();
+  setInterval(refreshHealth, 10000);
+  setInterval(refreshUsage, 15000);
+})();
+</script>
+</body>
+</html>

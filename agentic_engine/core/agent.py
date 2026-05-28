@@ -89,6 +89,7 @@ class Agent:
                 model=self.model or s.model_default,
                 tools=self._tool_schemas() if self.tools else None,
                 temperature=self.temperature,
+                agent_name=self.name,
             )
             msg = resp.choices[0].message
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}

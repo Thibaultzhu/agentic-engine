@@ -1,7 +1,7 @@
 [project]
 name = "agentic-engine"
-version = "0.1.0"
-description = "An original multi-agent engineering framework inspired by industry patterns (CrewAI / AutoGen / LangGraph). Built on Bailian Qwen3.6-plus."
+version = "0.2.0"
+description = "An original multi-agent engineering framework inspired by industry patterns (CrewAI / AutoGen / LangGraph). Built on Bailian Qwen."
 authors = [{ name = "Thibaultzhu" }]
 readme = "README.md"
 license = { text = "MIT" }
@@ -20,6 +20,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+cron = ["apscheduler>=3.10"]
+computer-use = ["pyautogui>=0.9.54", "mss>=9.0", "pillow>=10"]
+full = [
+    "apscheduler>=3.10",
+    "pyautogui>=0.9.54",
+    "mss>=9.0",
+    "pillow>=10",
+]
 
 [project.scripts]
 agentic = "agentic_engine.cli:app"

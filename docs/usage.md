@@ -194,3 +194,149 @@ ad.send("group_xxx", "构建完成 ✅")
 | Skill 没被发现                            | 路径不在搜索路径               | 放到 `<repo>/skills/` 或 `~/.agentic-engine/skills/` |
 | 工具被拒                                  | 当前权限模式禁了              | 切到 `ACCEPT_EDITS` 或挂 `approval_hook` |
 | `bash_run [refused]`                       | 命令命中黑名单                 | 改写命令；或把命令拆细                |
+
+---
+
+## 14. 多会话 / 多项目（v0.2）
+
+```bash
+agentic sessions new --project myapp --root ./myapp --title "需求评审"
+agentic sessions ls
+agentic sessions show <session-id>
+```
+
+Python：
+
+```python
+from agentic_engine.core.sessions import SessionStore
+
+store = SessionStore()
+proj = store.upsert_project("myapp", "./myapp")
+sess = store.new_session(proj.id, "需求评审")
+store.append(sess.id, "user", "做一个 markdown -> pdf CLI")
+store.append(sess.id, "assistant", "建议先写 PM 文档...")
+for m in store.history(sess.id):
+    print(m.role, m.content[:60])
+```
+
+## 15. 定时任务 / Cron（v0.2）
+
+```bash
+pip install -e ".[cron]"
+
+agentic cron add daily-summary --cron "0 9 * * *" \
+  --message "汇总昨日 git log 变更，发到我邮箱"
+agentic cron ls
+agentic cron rm <id>
+```
+
+支持的 schedule：`{kind:"cron",expr:"0 9 * * *"}` / `{kind:"interval",seconds:600}` / `{kind:"date",run_at:"2026-06-01T09:00:00"}`。
+
+## 16. Token 用量统计（v0.2）
+
+每一次成功的 LLM 调用都会写一行到 `~/.agentic-engine/usage.jsonl`。
+
+```bash
+agentic usage              # 全部
+agentic usage --days 7     # 近 7 天
+agentic usage --json
+curl localhost:9120/usage
+```
+
+## 17. git worktree 隔离（v0.2）
+
+```bash
+agentic worktree add /path/to/repo --branch agent/spike
+agentic worktree ls /path/to/repo
+```
+
+Python：
+
+```python
+from agentic_engine.core.worktree import add_worktree
+h = add_worktree("/path/to/repo")
+# h.path 是新 checkout；h.remove(force=True) 删
+```
+
+## 18. MCP 工具服务器（v0.2）
+
+```python
+from agentic_engine.core.mcp import MCPClient
+from agentic_engine import Agent
+from agentic_engine.tools import read_file
+
+client = MCPClient(["python", "-m", "your_mcp_server"])
+client.start()
+mcp_tools = client.as_tools()
+
+a = Agent(name="mcp-user", tools=[read_file] + mcp_tools)
+a.run("调用 mcp_xxx 工具完成 Y")
+
+client.stop()
+```
+
+## 19. Computer Use（v0.2）
+
+```bash
+pip install -e ".[computer-use]"
+```
+
+```python
+from agentic_engine import Agent
+from agentic_engine.tools import (
+    screen_grab, screen_size, mouse_click, keyboard_type
+)
+
+a = Agent(
+    name="ui-tester",
+    permission=...,           # 强烈建议挂 approval_hook
+    tools=[screen_grab, screen_size, mouse_click, keyboard_type],
+)
+a.run("截图屏幕中央，点 (400,300)，输入 hello")
+```
+
+`mouse_click / mouse_move / keyboard_type / keyboard_hotkey` 都打了
+`requires_approval=True`，不会被静默放过。
+
+## 20. Telegram 机器人（v0.2）
+
+```bash
+export TELEGRAM_BOT_TOKEN=123456:abc...
+```
+
+```python
+from agentic_engine.adapters import TelegramAdapter
+from agentic_engine import Agent
+from agentic_engine.tools import read_file, web_fetch
+
+a = Agent(name="tg", tools=[read_file, web_fetch])
+tg = TelegramAdapter()
+
+def on_msg(im):
+    tg.send(im.chat_id, a.run(im.text, verbose=False).output)
+
+tg.listen(on_msg)
+```
+
+## 21. H5 一次性分享（v0.2）
+
+```bash
+export AGENTIC_ADMIN_KEY=$(openssl rand -hex 16)
+agentic serve --port 9120 &
+
+TOKEN=$(curl -s -X POST localhost:9120/h5/token \
+  -H "X-Admin-Key: $AGENTIC_ADMIN_KEY" | jq -r .token)
+open "http://localhost:9120/h5/page?token=$TOKEN"
+```
+
+Token 默认 1800 秒过期；过期或第二次失效都会 401。
+
+## 22. 桌面控制台
+
+```bash
+agentic serve --port 9120 &
+open desktop/web/index.html
+```
+
+打开即用：左侧 sessions、中间消息流、右侧 status / usage / cron。
+想包成原生窗口看 `desktop/README.md` 里的 Tauri 段。
